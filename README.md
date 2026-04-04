@@ -27,9 +27,9 @@ Your final app should:
 ### Setup
 
 ```bash
-python -m venv .venv
+python -m venv .venv # create an environment
 source .venv/bin/activate  # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+pip install -r requirements.txt # 
 ```
 
 ### Suggested workflow
