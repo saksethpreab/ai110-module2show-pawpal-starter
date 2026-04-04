@@ -43,6 +43,50 @@ class TaskStatus(Enum):
 
 
 # ---------------------------------------------------------------------------
+# Time helpers
+#
+# All times in this system are stored as plain "hr:min" strings (e.g. "7:30",
+# "14:05"). These helpers handle the arithmetic so nothing else needs to.
+# ---------------------------------------------------------------------------
+
+def _parse_time(time_str: str) -> tuple[int, int]:
+    """Split "hr:min" into (hours, minutes) as ints."""
+    h, m = time_str.split(":")
+    return int(h), int(m)
+
+
+def _format_time(h: int, m: int) -> str:
+    """Reconstruct a "hr:min" string, zero-padding the minutes."""
+    return f"{h}:{m:02d}"
+
+
+def _add_minutes(time_str: str, minutes: int) -> str:
+    """Return a new "hr:min" string that is `minutes` later than `time_str`."""
+    h, m = _parse_time(time_str)
+    total = h * 60 + m + minutes
+    return _format_time(total // 60, total % 60)
+
+
+def _time_to_window(time_str: str) -> TimeOfDay:
+    """Map a clock time to its day window.
+    before 12:00 → MORNING, 12–17 → AFTERNOON, 17+ → EVENING.
+    """
+    h, _ = _parse_time(time_str)
+    if h < 12:
+        return TimeOfDay.MORNING
+    elif h < 17:
+        return TimeOfDay.AFTERNOON
+    return TimeOfDay.EVENING
+
+
+def _max_time(a: str, b: str) -> str:
+    """Return whichever "hr:min" string is later."""
+    ha, ma = _parse_time(a)
+    hb, mb = _parse_time(b)
+    return a if ha * 60 + ma >= hb * 60 + mb else b
+
+
+# ---------------------------------------------------------------------------
 # FoodPreference
 # ---------------------------------------------------------------------------
 
@@ -59,13 +103,23 @@ class FoodPreference:
         self.food_type = food_type
         self.portion_size_grams = portion_size_grams
         self.feedings_per_day = feedings_per_day
+        # Default to empty list so callers can always iterate without a None check
         self.dietary_restrictions = dietary_restrictions or []
 
     def describe(self) -> str:
-        pass
+        """Return a human-readable summary of this food preference."""
+        restrictions = ", ".join(self.dietary_restrictions) if self.dietary_restrictions else "none"
+        return (
+            f"{self.food_name} ({self.food_type}), "
+            f"{self.portion_size_grams}g x {self.feedings_per_day}/day, "
+            f"restrictions: {restrictions}"
+        )
 
     def update(self, **kwargs):
-        pass
+        """Update any field by name. Unknown keys are silently ignored."""
+        for key, value in kwargs.items():
+            if hasattr(self, key):
+                setattr(self, key, value)
 
 
 # ---------------------------------------------------------------------------
@@ -82,18 +136,37 @@ class Task:
     preferred_time: TimeOfDay
     is_mandatory: bool = False
     notes: Optional[str] = None
+    food_preference: Optional[FoodPreference] = None  # populated for FEEDING tasks only
 
     def validate(self):
-        pass
+        """Raise ValueError if the task data is logically invalid."""
+        if self.duration_minutes <= 0:
+            raise ValueError(f"Task '{self.name}': duration_minutes must be positive")
+        if not self.name.strip():
+            raise ValueError("Task name cannot be empty")
 
     def fits_in_budget(self, available_minutes: int) -> bool:
-        pass
+        """True if this task's duration fits inside the given minute budget."""
+        return self.duration_minutes <= available_minutes
 
     def is_compatible_with_window(self, window: TimeOfDay) -> bool:
-        pass
+        """True if the task can be placed in `window`.
+        A task with preferred_time=ANY is compatible with every window.
+        """
+        return self.preferred_time in (TimeOfDay.ANY, window)
 
     def to_dict(self) -> dict:
-        pass
+        """Serialize the task to a plain dict (enum fields become their string values)."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "category": self.category.value,
+            "duration_minutes": self.duration_minutes,
+            "priority": self.priority.name,
+            "preferred_time": self.preferred_time.value,
+            "is_mandatory": self.is_mandatory,
+            "notes": self.notes,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -111,28 +184,64 @@ class Pet:
     tasks: list[Task] = field(default_factory=list)
 
     def __post_init__(self):
+        # Normalize name to lowercase so searches are always case-insensitive
         self.name = self.name.lower()
 
     def add_task(self, task: Task):
-        pass
+        self.tasks.append(task)
 
     def remove_task(self, task_id: str):
-        pass
+        # Rebuild the list excluding the target; no error if id not found
+        self.tasks = [t for t in self.tasks if t.id != task_id]
 
-    def edit_task(self, task_id: str, **kwargs):
-        pass
+    def edit_task(
+        self,
+        task_id: str,
+        name: Optional[str] = None,
+        duration_minutes: Optional[int] = None,
+        priority: Optional[Priority] = None,
+        preferred_time: Optional[TimeOfDay] = None,
+        is_mandatory: Optional[bool] = None,
+        notes: Optional[str] = None,
+    ):
+        """Update one or more fields on a task. Only non-None arguments are applied."""
+        for task in self.tasks:
+            if task.id == task_id:
+                if name is not None:
+                    task.name = name
+                if duration_minutes is not None:
+                    task.duration_minutes = duration_minutes
+                if priority is not None:
+                    task.priority = priority
+                if preferred_time is not None:
+                    task.preferred_time = preferred_time
+                if is_mandatory is not None:
+                    task.is_mandatory = is_mandatory
+                if notes is not None:
+                    task.notes = notes
+                return
+        raise KeyError(f"Task '{task_id}' not found on pet '{self.name}'")
 
     def get_tasks(self) -> list[Task]:
-        pass
+        # Return a copy so callers cannot mutate the internal list directly
+        return list(self.tasks)
 
     def get_mandatory_tasks(self) -> list[Task]:
-        pass
+        return [t for t in self.tasks if t.is_mandatory]
 
     def get_tasks_by_category(self, category: TaskCategory) -> list[Task]:
-        pass
+        return [t for t in self.tasks if t.category == category]
 
-    def get_pending_tasks(self) -> list[Task]:
-        pass
+    def get_pending_tasks(self, scheduled_tasks: Optional[list[ScheduledTask]] = None) -> list[Task]:
+        """Return tasks that have not yet been given a scheduled slot today.
+
+        If `scheduled_tasks` is None (no plan exists yet), all tasks are pending.
+        Otherwise, a task is pending when its id does not appear in the scheduled list.
+        """
+        if scheduled_tasks is None:
+            return list(self.tasks)
+        scheduled_ids = {st.task.id for st in scheduled_tasks}
+        return [t for t in self.tasks if t.id not in scheduled_ids]
 
 
 # ---------------------------------------------------------------------------
@@ -145,35 +254,56 @@ class Owner:
         self.name = name
         self.wake_time = wake_time
         self.time_budget: dict[TimeOfDay, int] = {}
-        self._counters: dict[str, int] = {}
-        self._pets: dict[str, Pet] = {}
+        self._counters: dict[str, int] = {}   # tracks how many pets per species prefix
+        self._pets: dict[str, Pet] = {}        # keyed by auto-generated pet id
 
     def add_pet(self, pet: Pet):
-        pass
+        """Add a pet, auto-generating a meaningful id if the pet has none yet.
+        The id uses the first letter of the species + a zero-padded counter,
+        e.g. the first dog gets "d001", the second cat gets "c002".
+        """
+        if pet.id is None:
+            prefix = pet.species[0].lower()
+            self._counters[prefix] = self._counters.get(prefix, 0) + 1
+            pet.id = f"{prefix}{self._counters[prefix]:03d}"
+        self._pets[pet.id] = pet
 
     def get_pets(self) -> list[Pet]:
-        pass
+        return list(self._pets.values())
 
     def search_pets(self, name: str) -> list[Pet]:
-        pass
+        """Return all pets whose name matches (case-insensitive)."""
+        name_lower = name.lower()
+        return [p for p in self._pets.values() if p.name == name_lower]
 
-    def remove_pet(self, name: str):
-        pass
+    def remove_pet(self, name: str) -> bool | list[Pet]:
+        """Remove a pet by name.
+        - Returns False if no pet with that name exists.
+        - Returns True if exactly one match was found and removed.
+        - Returns the list of matching pets if there are multiple (caller must choose).
+        """
+        matches = self.search_pets(name)
+        if len(matches) == 0:
+            return False
+        if len(matches) == 1:
+            self._remove_pet_by_id(matches[0].id)
+            return True
+        return matches  # ambiguous — let the caller decide which to remove
 
     def set_budget(self, window: TimeOfDay, minutes: int):
-        pass
+        self.time_budget[window] = minutes
 
     def get_budget(self, window: TimeOfDay) -> int:
-        pass
+        return self.time_budget.get(window, 0)
 
     def get_total_budget(self) -> int:
-        pass
+        return sum(self.time_budget.values())
 
     def _get_pet_by_id(self, pet_id: str) -> Optional[Pet]:
-        pass
+        return self._pets.get(pet_id)
 
     def _remove_pet_by_id(self, pet_id: str):
-        pass
+        self._pets.pop(pet_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -189,6 +319,7 @@ class ScheduledTask:
         end_time: str,
         status: TaskStatus,
         reason: str,
+        time_window: TimeOfDay,
     ):
         # start_time and end_time stored as "hr:min" strings
         self.task = task
@@ -197,19 +328,28 @@ class ScheduledTask:
         self.end_time = end_time
         self.status = status
         self.reason = reason
+        # time_window is stored explicitly so budget calculations never need
+        # to re-parse the time strings to figure out which window we're in
+        self.time_window = time_window
 
     @property
     def duration_minutes(self) -> int:
-        pass
+        """Compute duration from the stored start/end strings."""
+        h1, m1 = _parse_time(self.start_time)
+        h2, m2 = _parse_time(self.end_time)
+        return (h2 * 60 + m2) - (h1 * 60 + m1)
 
     def mark_completed(self):
-        pass
+        self.status = TaskStatus.COMPLETED
 
     def mark_skipped(self):
-        pass
+        self.status = TaskStatus.SKIPPED
 
     def __str__(self) -> str:
-        pass
+        return (
+            f"[{self.start_time}-{self.end_time}] {self.task.name} "
+            f"({self.task.duration_minutes} min) - {self.status.value}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -217,32 +357,63 @@ class ScheduledTask:
 # ---------------------------------------------------------------------------
 
 class DailyPlan:
-    def __init__(self, date: date):
-        self.date = date
+    def __init__(self, plan_date: date, owner: Owner, pet: Pet):
+        self.date = plan_date
+        self.owner = owner
+        self.pet = pet
         self.scheduled_tasks: list[ScheduledTask] = []
         self.skipped_tasks: list[Task] = []
         self.warnings: list[str] = []
 
     def add_scheduled_task(self, st: ScheduledTask):
-        pass
+        self.scheduled_tasks.append(st)
 
     def add_skipped_task(self, task: Task):
-        pass
+        self.skipped_tasks.append(task)
 
     def add_warning(self, msg: str):
-        pass
+        self.warnings.append(msg)
 
     def get_window_summary(self) -> dict:
-        pass
+        """Return per-window usage stats: tasks scheduled, minutes used, budget available."""
+        summary = {}
+        for window in [TimeOfDay.MORNING, TimeOfDay.AFTERNOON, TimeOfDay.EVENING]:
+            tasks_in_window = [st for st in self.scheduled_tasks if st.time_window == window]
+            used = sum(st.task.duration_minutes for st in tasks_in_window)
+            budget = self.owner.get_budget(window)
+            summary[window.value] = {
+                "tasks": len(tasks_in_window),
+                "used_minutes": used,
+                "budget_minutes": budget,
+            }
+        return summary
 
     def get_reasoning(self) -> str:
-        pass
+        """Build a human-readable explanation of every scheduling decision."""
+        lines = [
+            f"Plan for {self.pet.name} - {self.date} (owner: {self.owner.name})",
+            "",
+        ]
+        for st in self.scheduled_tasks:
+            lines.append(f"  {st}")
+            lines.append(f"    -> {st.reason}")
+        if self.skipped_tasks:
+            lines.append("")
+            lines.append("Skipped (eligible for carry-over tomorrow):")
+            for t in self.skipped_tasks:
+                lines.append(f"  - {t.name} [{t.priority.name}]")
+        if self.warnings:
+            lines.append("")
+            lines.append("Warnings:")
+            for w in self.warnings:
+                lines.append(f"  ! {w}")
+        return "\n".join(lines)
 
     def get_skipped_for_carryover(self) -> list[Task]:
-        pass
+        return list(self.skipped_tasks)
 
     def __str__(self) -> str:
-        pass
+        return self.get_reasoning()
 
 
 # ---------------------------------------------------------------------------
@@ -254,23 +425,177 @@ class Scheduler:
         self.owner = owner
         self.pet = pet
 
-    def generate_plan(self, plan_date: date) -> DailyPlan:
-        pass
+    def generate_plan(self, plan_date: date, previous_plan: Optional[DailyPlan] = None) -> DailyPlan:
+        """Build a full DailyPlan using a three-pass algorithm:
+          Pass 1: EMERGENCY tasks — placed immediately, bypassing budget limits
+          Pass 2: Mandatory tasks — always scheduled, with a warning if over budget
+          Pass 3: Optional tasks  — scheduled greedily by priority within budget
+        """
+        plan = DailyPlan(plan_date, self.owner, self.pet)
+        self._plan_date = plan_date
+        self._warnings: list[str] = []  # collected during passes, flushed into plan at the end
+
+        wake = self.owner.wake_time
+        # Each window has an independent time cursor that advances as tasks are placed.
+        # If the owner wakes after noon, the MORNING cursor is pushed to 11:59 so it
+        # holds no usable time; AFTERNOON and EVENING start no earlier than wake_time.
+        self._cursors = {
+            TimeOfDay.MORNING: wake if _parse_time(wake)[0] < 12 else "11:59",
+            TimeOfDay.AFTERNOON: _max_time(wake, "12:00"),
+            TimeOfDay.EVENING: _max_time(wake, "17:00"),
+        }
+
+        # Merge pet's standing tasks with any tasks carried over from yesterday.
+        # Carried-over tasks are only added if their id is not already in pet.tasks,
+        # which prevents the same task from being double-counted.
+        carried = self._carry_over(previous_plan) if previous_plan else []
+        existing_ids = {t.id for t in self.pet.tasks}
+        all_tasks = list(self.pet.tasks) + [t for t in carried if t.id not in existing_ids]
+
+        # Split into the three scheduling pools
+        emergency = [t for t in all_tasks if t.priority == Priority.EMERGENCY]
+        mandatory = [t for t in all_tasks if t.is_mandatory and t.priority != Priority.EMERGENCY]
+        optional  = [t for t in all_tasks if not t.is_mandatory and t.priority != Priority.EMERGENCY]
+
+        # --- Pass 1: Emergency ---
+        for st in self._schedule_emergency(emergency):
+            plan.add_scheduled_task(st)
+
+        # --- Pass 2: Mandatory ---
+        for st in self._schedule_mandatory(mandatory):
+            plan.add_scheduled_task(st)
+
+        # Recompute remaining budget after the first two passes before running optional
+        remaining = {
+            w: self._remaining_budget(w, plan)
+            for w in [TimeOfDay.MORNING, TimeOfDay.AFTERNOON, TimeOfDay.EVENING]
+        }
+
+        # --- Pass 3: Optional ---
+        for st in self._schedule_optional(optional, remaining):
+            plan.add_scheduled_task(st)
+
+        # Any task that still has no slot is skipped (eligible for tomorrow's carry-over)
+        scheduled_ids = {st.task.id for st in plan.scheduled_tasks}
+        for task in all_tasks:
+            if task.id not in scheduled_ids:
+                plan.add_skipped_task(task)
+
+        # Move accumulated warnings into the plan object
+        for warning in self._warnings:
+            plan.add_warning(warning)
+
+        return plan
+
+    def _schedule_emergency(self, tasks: list[Task]) -> list[ScheduledTask]:
+        """Place EMERGENCY tasks first, in their preferred window (MORNING if ANY).
+        Budget limits are intentionally ignored — emergencies always get a slot.
+        A warning is always added so the owner sees each emergency in the plan summary.
+        """
+        result = []
+        for task in self._sort_by_priority(tasks):
+            window = task.preferred_time if task.preferred_time != TimeOfDay.ANY else TimeOfDay.MORNING
+            st = self._assign_slot(task, self._cursors[window])
+            self._cursors[window] = st.end_time  # advance cursor past this task
+            self._warnings.append(f"EMERGENCY: '{task.name}' scheduled in {window.value}")
+            result.append(st)
+        return result
 
     def _schedule_mandatory(self, tasks: list[Task]) -> list[ScheduledTask]:
-        pass
+        """Place mandatory tasks, always scheduling them even if the budget is exceeded.
+        A warning is added for any task that pushes a window over its budget.
+        Window selection for ANY-time tasks picks whichever window has the most spare capacity.
+        """
+        result = []
+        for task in self._sort_by_priority(tasks):
+            window = self._pick_window_from_budget(task, result)
+            budget = self.owner.get_budget(window)
+            used = sum(st.task.duration_minutes for st in result if st.time_window == window)
+            if task.duration_minutes > budget - used:
+                self._warnings.append(
+                    f"Mandatory task '{task.name}' exceeds {window.value} budget by "
+                    f"{task.duration_minutes - (budget - used)} min"
+                )
+            st = self._assign_slot(task, self._cursors[window])
+            self._cursors[window] = st.end_time
+            result.append(st)
+        return result
 
     def _schedule_optional(self, tasks: list[Task], remaining: dict) -> list[ScheduledTask]:
-        pass
+        """Greedily fill remaining window capacity with optional tasks, highest priority first.
+        A task is skipped (not scheduled) if its preferred window is full.
+        For ANY-time tasks, the window with the most remaining capacity is chosen.
+        """
+        result = []
+        for task in self._sort_by_priority(tasks):
+            if task.preferred_time != TimeOfDay.ANY:
+                window = task.preferred_time
+                # Skip this task if it doesn't fit in the budget that's left
+                if not task.fits_in_budget(remaining.get(window, 0)):
+                    continue
+            else:
+                # Find all windows where the task fits, then pick the roomiest one
+                windows = [TimeOfDay.MORNING, TimeOfDay.AFTERNOON, TimeOfDay.EVENING]
+                viable = [w for w in windows if task.fits_in_budget(remaining.get(w, 0))]
+                if not viable:
+                    continue
+                window = max(viable, key=lambda w: remaining.get(w, 0))
+
+            st = self._assign_slot(task, self._cursors[window])
+            self._cursors[window] = st.end_time
+            remaining[window] = remaining.get(window, 0) - task.duration_minutes
+            result.append(st)
+        return result
 
     def _sort_by_priority(self, tasks: list[Task]) -> list[Task]:
-        pass
+        """Sort tasks descending by Priority value (EMERGENCY=4 first, LOW=1 last)."""
+        return sorted(tasks, key=lambda t: t.priority.value, reverse=True)
 
     def _assign_slot(self, task: Task, current_time: str) -> ScheduledTask:
-        pass
+        """Create a ScheduledTask starting at `current_time` and lasting task.duration_minutes.
+        The reason string explains when the task was placed and includes feeding details
+        when the task is a FEEDING task with a linked FoodPreference.
+        """
+        end_time = _add_minutes(current_time, task.duration_minutes)
+        window = _time_to_window(current_time)
+        reason = f"Scheduled at {current_time} ({window.value})"
+        if task.food_preference:
+            fp = task.food_preference
+            reason += f" | {fp.food_name} - {fp.portion_size_grams}g"
+        return ScheduledTask(
+            task=task,
+            date=self._plan_date,
+            start_time=current_time,
+            end_time=end_time,
+            status=TaskStatus.SCHEDULED,
+            reason=reason,
+            time_window=window,
+        )
 
     def _remaining_budget(self, window: TimeOfDay, plan: DailyPlan) -> int:
-        pass
+        """Minutes still available in `window` after accounting for already-scheduled tasks."""
+        budget = self.owner.get_budget(window)
+        used = sum(
+            st.task.duration_minutes
+            for st in plan.scheduled_tasks
+            if st.time_window == window
+        )
+        return max(0, budget - used)  # never return a negative number
 
     def _carry_over(self, previous_plan: DailyPlan) -> list[Task]:
-        pass
+        """Pull skipped tasks from yesterday's plan so they can be rescheduled today."""
+        return list(previous_plan.skipped_tasks)
+
+    def _pick_window_from_budget(self, task: Task, scheduled: list[ScheduledTask]) -> TimeOfDay:
+        """Choose the best window for a task.
+        If the task has a specific preferred_time, that window is used directly.
+        If preferred_time is ANY, pick the window with the most remaining capacity
+        among the tasks already placed in this pass.
+        """
+        if task.preferred_time != TimeOfDay.ANY:
+            return task.preferred_time
+        windows = [TimeOfDay.MORNING, TimeOfDay.AFTERNOON, TimeOfDay.EVENING]
+        def remaining(w: TimeOfDay) -> int:
+            used = sum(st.task.duration_minutes for st in scheduled if st.time_window == w)
+            return self.owner.get_budget(w) - used
+        return max(windows, key=remaining)
