@@ -1,15 +1,16 @@
+import sys
 from datetime import date
 
 from pawpal_system import (
     Owner, Pet, Task, FoodPreference, Scheduler,
-    TaskCategory, Priority, TimeOfDay,
+    TaskCategory, Priority, TimeOfDay, format_time,
 )
 
 # ---------------------------------------------------------------------------
 # Owner setup
 # ---------------------------------------------------------------------------
 
-jordan = Owner(name="Jordan", wake_time="7:00")
+jordan = Owner(name="Jordan", wake_time=420)  # 7:00 = 7*60
 jordan.set_budget(TimeOfDay.MORNING,   60)   # 60 min available in the morning
 jordan.set_budget(TimeOfDay.AFTERNOON, 90)   # 90 min available in the afternoon
 jordan.set_budget(TimeOfDay.EVENING,   30)   # 30 min available in the evening
@@ -21,7 +22,6 @@ jordan.set_budget(TimeOfDay.EVENING,   30)   # 30 min available in the evening
 mochi = Pet(name="Mochi", species="dog", breed="Shiba Inu", age_years=3.0)
 jordan.add_pet(mochi)
 
-# Food preference for Mochi's feeding tasks
 mochi_food = FoodPreference(
     food_name="Royal Canin Medium Adult",
     food_type="dry",
@@ -30,49 +30,50 @@ mochi_food = FoodPreference(
     dietary_restrictions=["no grain"],
 )
 
-mochi.add_task(Task(
-    id="m1",
-    name="Morning Walk",
-    category=TaskCategory.WALK,
-    duration_minutes=30,
-    priority=Priority.HIGH,
-    preferred_time=TimeOfDay.MORNING,
-    is_mandatory=True,
-    notes="Loop around the park",
-))
-
-mochi.add_task(Task(
-    id="m2",
-    name="Morning Feeding",
-    category=TaskCategory.FEEDING,
-    duration_minutes=10,
-    priority=Priority.HIGH,
-    preferred_time=TimeOfDay.MORNING,
-    is_mandatory=True,
-    food_preference=mochi_food,
-))
-
-mochi.add_task(Task(
-    id="m3",
-    name="Enrichment Puzzle",
-    category=TaskCategory.ENRICHMENT,
-    duration_minutes=20,
-    priority=Priority.MEDIUM,
-    preferred_time=TimeOfDay.AFTERNOON,
-    is_mandatory=False,
-    notes="Snuffle mat or Kong toy",
-))
-
-mochi.add_task(Task(
-    id="m4",
-    name="Evening Feeding",
-    category=TaskCategory.FEEDING,
-    duration_minutes=10,
-    priority=Priority.HIGH,
-    preferred_time=TimeOfDay.EVENING,
-    is_mandatory=True,
-    food_preference=mochi_food,
-))
+for task in [
+    Task(
+        id="m1",
+        name="Morning Walk",
+        category=TaskCategory.WALK,
+        duration_minutes=30,
+        priority=Priority.HIGH,
+        preferred_time=TimeOfDay.MORNING,
+        is_mandatory=True,
+        notes="Loop around the park",
+    ),
+    Task(
+        id="m2",
+        name="Morning Feeding",
+        category=TaskCategory.FEEDING,
+        duration_minutes=10,
+        priority=Priority.HIGH,
+        preferred_time=TimeOfDay.MORNING,
+        is_mandatory=True,
+        food_preference=mochi_food,
+    ),
+    Task(
+        id="m3",
+        name="Enrichment Puzzle",
+        category=TaskCategory.ENRICHMENT,
+        duration_minutes=20,
+        priority=Priority.MEDIUM,
+        preferred_time=TimeOfDay.AFTERNOON,
+        is_mandatory=False,
+        notes="Snuffle mat or Kong toy",
+    ),
+    Task(
+        id="m4",
+        name="Evening Feeding",
+        category=TaskCategory.FEEDING,
+        duration_minutes=10,
+        priority=Priority.HIGH,
+        preferred_time=TimeOfDay.EVENING,
+        is_mandatory=True,
+        food_preference=mochi_food,
+    ),
+]:
+    task.validate()
+    mochi.add_task(task)
 
 # ---------------------------------------------------------------------------
 # Pet 2 — Luna the cat
@@ -88,58 +89,59 @@ luna_food = FoodPreference(
     feedings_per_day=2,
 )
 
-luna.add_task(Task(
-    id="l1",
-    name="Morning Feeding",
-    category=TaskCategory.FEEDING,
-    duration_minutes=5,
-    priority=Priority.HIGH,
-    preferred_time=TimeOfDay.MORNING,
-    is_mandatory=True,
-    food_preference=luna_food,
-))
-
-luna.add_task(Task(
-    id="l2",
-    name="Grooming Session",
-    category=TaskCategory.GROOMING,
-    duration_minutes=15,
-    priority=Priority.MEDIUM,
-    preferred_time=TimeOfDay.AFTERNOON,
-    is_mandatory=False,
-    notes="Brush and check ears",
-))
-
-luna.add_task(Task(
-    id="l3",
-    name="Evening Feeding",
-    category=TaskCategory.FEEDING,
-    duration_minutes=5,
-    priority=Priority.HIGH,
-    preferred_time=TimeOfDay.EVENING,
-    is_mandatory=True,
-    food_preference=luna_food,
-))
-
-luna.add_task(Task(
-    id="l4",
-    name="Playtime",
-    category=TaskCategory.ENRICHMENT,
-    duration_minutes=20,
-    priority=Priority.LOW,
-    preferred_time=TimeOfDay.EVENING,
-    is_mandatory=False,
-    notes="Wand toy or laser pointer",
-))
+for task in [
+    Task(
+        id="l1",
+        name="Morning Feeding",
+        category=TaskCategory.FEEDING,
+        duration_minutes=5,
+        priority=Priority.HIGH,
+        preferred_time=TimeOfDay.MORNING,
+        is_mandatory=True,
+        food_preference=luna_food,
+    ),
+    Task(
+        id="l2",
+        name="Grooming Session",
+        category=TaskCategory.GROOMING,
+        duration_minutes=15,
+        priority=Priority.MEDIUM,
+        preferred_time=TimeOfDay.AFTERNOON,
+        is_mandatory=False,
+        notes="Brush and check ears",
+    ),
+    Task(
+        id="l3",
+        name="Evening Feeding",
+        category=TaskCategory.FEEDING,
+        duration_minutes=5,
+        priority=Priority.HIGH,
+        preferred_time=TimeOfDay.EVENING,
+        is_mandatory=True,
+        food_preference=luna_food,
+    ),
+    Task(
+        id="l4",
+        name="Playtime",
+        category=TaskCategory.ENRICHMENT,
+        duration_minutes=20,
+        priority=Priority.LOW,
+        preferred_time=TimeOfDay.EVENING,
+        is_mandatory=False,
+        notes="Wand toy or laser pointer",
+    ),
+]:
+    task.validate()
+    luna.add_task(task)
 
 # ---------------------------------------------------------------------------
-# Generate today's schedules
+# Generate schedules
 # ---------------------------------------------------------------------------
 
-today = date.today()
+# Accept an optional date argument: python main.py 2025-12-25
+plan_date = date.fromisoformat(sys.argv[1]) if len(sys.argv) > 1 else date.today()
 
-mochi_plan = Scheduler(jordan, mochi).generate_plan(today)
-luna_plan  = Scheduler(jordan, luna).generate_plan(today)
+plans = [Scheduler(jordan, pet).generate_plan(plan_date) for pet in jordan.get_pets()]
 
 # ---------------------------------------------------------------------------
 # Print Today's Schedule
@@ -149,17 +151,17 @@ SEPARATOR = "=" * 55
 
 print(SEPARATOR)
 print("  PAWPAL+ - Today's Schedule")
-print(f"  {today.strftime('%A, %B %d %Y')}  |  Owner: {jordan.name}")
+print(f"  {plan_date.strftime('%A, %B %d %Y')}  |  Owner: {jordan.name}")
 print(SEPARATOR)
 
-for plan in (mochi_plan, luna_plan):
+for plan in plans:
     print()
     print(f"  {plan.pet.name.upper()}  ({plan.pet.breed})")
     print("-" * 55)
 
     if plan.scheduled_tasks:
         for st in plan.scheduled_tasks:
-            print(f"  {st.start_time:>5} - {st.end_time:<5}  {st.task.name}")
+            print(f"  {format_time(st.start_time):>5} - {format_time(st.end_time):<5}  {st.task.name}")
             print(f"               -> {st.reason}")
     else:
         print("  (no tasks scheduled)")
@@ -179,15 +181,15 @@ for plan in (mochi_plan, luna_plan):
 print()
 print(SEPARATOR)
 
-# Budget summary across both pets
+# Budget summary across all pets
 print("  Budget summary")
 print("-" * 55)
-for label, plan in (("Mochi", mochi_plan), ("Luna", luna_plan)):
+for plan in plans:
     summary = plan.get_window_summary()
-    parts = []
-    for window in ("morning", "afternoon", "evening"):
-        s = summary[window]
-        parts.append(f"{window}: {s['used_minutes']}/{s['budget_minutes']} min")
-    print(f"  {label:<8}  {' | '.join(parts)}")
+    parts = [
+        f"{window}: {summary[window]['used_minutes']}/{summary[window]['budget_minutes']} min"
+        for window in ("morning", "afternoon", "evening")
+    ]
+    print(f"  {plan.pet.name.title():<8}  {' | '.join(parts)}")
 
 print(SEPARATOR)

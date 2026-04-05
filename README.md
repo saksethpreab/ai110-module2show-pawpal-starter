@@ -41,3 +41,12 @@ pip install -r requirements.txt #
 5. Add tests to verify key behaviors.
 6. Connect your logic to the Streamlit UI in `app.py`.
 7. Refine UML so it matches what you actually built.
+
+# Smarter Scheduling
+
+- **4-pass priority scheduler** — pinned tasks placed at exact times first, then emergency, mandatory, and optional tasks fill remaining windows in priority order
+- **Per-window time budgets** — morning, afternoon, and evening each have independent minute budgets; optional tasks are skipped rather than over-scheduled
+- **Conflict detection** — flags over-capacity days, mandatory tasks that exceed their window budget, same-category stacking, and pinned-task time overlaps
+- **Carry-over** — mandatory and emergency tasks that don't fit today are automatically promoted to tomorrow's plan
+- **Recurring tasks** — daily, weekly, interval, and monthly recurrence patterns; tasks only appear on matching dates
+- **Pinned start times** — tasks can be locked to a specific clock time, bypassing window-based placement while still raising overlap warnings

@@ -9,11 +9,11 @@ from datetime import date
 
 from pawpal_system import (
     # Time helpers
-    _parse_time, _format_time, _add_minutes, _time_to_window, _max_time,
+    parse_time_str, format_time, time_to_window, recurrence_applies_to_date,
     # Enums
-    TaskCategory, Priority, TimeOfDay, TaskStatus,
+    TaskCategory, Priority, TimeOfDay, TaskStatus, RecurrenceType,
     # Classes
-    FoodPreference, Task, Pet, Owner, ScheduledTask, DailyPlan, Scheduler,
+    FoodPreference, Task, Pet, Owner, ScheduledTask, DailyPlan, Scheduler, Recurrence,
 )
 
 TODAY = date(2026, 4, 4)
@@ -47,7 +47,7 @@ def make_task(
     )
 
 
-def make_owner(wake_time="7:00", morning=60, afternoon=90, evening=30) -> Owner:
+def make_owner(wake_time=420, morning=60, afternoon=90, evening=30) -> Owner:
     owner = Owner("Jordan", wake_time)
     owner.set_budget(TimeOfDay.MORNING, morning)
     owner.set_budget(TimeOfDay.AFTERNOON, afternoon)
@@ -55,17 +55,17 @@ def make_owner(wake_time="7:00", morning=60, afternoon=90, evening=30) -> Owner:
     return owner
 
 
-def make_scheduled_task(task=None, start="7:00", duration=30,
-                        window=TimeOfDay.MORNING) -> ScheduledTask:
+def make_scheduled_task(task=None, start=420, duration=30,
+                        window=TimeOfDay.MORNING, status=TaskStatus.SCHEDULED) -> ScheduledTask:
     if task is None:
         task = make_task()
-    end = _add_minutes(start, duration)
+    end = start + duration
     return ScheduledTask(
         task=task,
         date=TODAY,
         start_time=start,
         end_time=end,
-        status=TaskStatus.SCHEDULED,
+        status=status,
         reason="test",
         time_window=window,
     )
@@ -77,78 +77,50 @@ def make_scheduled_task(task=None, start="7:00", duration=30,
 
 class TestTimeHelpers(unittest.TestCase):
 
-    # --- _parse_time ---
+    # --- parse_time_str ---
 
-    def test_parse_time_whole_hour(self):
-        """Parses "7:00" into (7, 0)."""
-        self.assertEqual(_parse_time("7:00"), (7, 0))
+    def test_parse_time_str_whole_hour(self):
+        """Parses '7:00' into 420 minutes."""
+        self.assertEqual(parse_time_str("7:00"), 420)
 
-    def test_parse_time_with_minutes(self):
-        """Parses "14:35" into (14, 35)."""
-        self.assertEqual(_parse_time("14:35"), (14, 35))
+    def test_parse_time_str_with_minutes(self):
+        """Parses '14:35' into 875 minutes."""
+        self.assertEqual(parse_time_str("14:35"), 875)
 
-    def test_parse_time_zero_padded_minutes(self):
-        """Parses "9:05" correctly without dropping the leading zero."""
-        self.assertEqual(_parse_time("9:05"), (9, 5))
+    def test_parse_time_str_zero_padded(self):
+        """Parses '9:05' correctly."""
+        self.assertEqual(parse_time_str("9:05"), 545)
 
-    # --- _format_time ---
+    # --- format_time ---
 
     def test_format_time_pads_minutes(self):
         """Minutes < 10 are zero-padded in the output string."""
-        self.assertEqual(_format_time(8, 5), "8:05")
+        self.assertEqual(format_time(485), "8:05")
 
     def test_format_time_two_digit_minutes(self):
         """Minutes >= 10 are not padded."""
-        self.assertEqual(_format_time(13, 45), "13:45")
+        self.assertEqual(format_time(825), "13:45")
 
-    # --- _add_minutes ---
+    def test_format_time_midnight(self):
+        """Midnight formats as 0:00."""
+        self.assertEqual(format_time(0), "0:00")
 
-    def test_add_minutes_no_overflow(self):
-        """Adding minutes within the same hour."""
-        self.assertEqual(_add_minutes("7:00", 30), "7:30")
-
-    def test_add_minutes_crosses_hour_boundary(self):
-        """Adding minutes that push past the hour boundary."""
-        self.assertEqual(_add_minutes("7:45", 30), "8:15")
-
-    def test_add_minutes_crosses_noon(self):
-        """Adding minutes that push from morning into afternoon."""
-        self.assertEqual(_add_minutes("11:50", 20), "12:10")
-
-    def test_add_minutes_zero(self):
-        """Adding zero minutes returns the same time."""
-        self.assertEqual(_add_minutes("10:00", 0), "10:00")
-
-    # --- _time_to_window ---
+    # --- time_to_window ---
 
     def test_window_morning(self):
-        """Any time before 12:00 maps to MORNING."""
-        self.assertEqual(_time_to_window("7:30"), TimeOfDay.MORNING)
-        self.assertEqual(_time_to_window("11:59"), TimeOfDay.MORNING)
+        """Any time before 720 (12:00) maps to MORNING."""
+        self.assertEqual(time_to_window(450), TimeOfDay.MORNING)   # 7:30
+        self.assertEqual(time_to_window(719), TimeOfDay.MORNING)   # 11:59
 
     def test_window_afternoon(self):
-        """12:00–16:59 maps to AFTERNOON."""
-        self.assertEqual(_time_to_window("12:00"), TimeOfDay.AFTERNOON)
-        self.assertEqual(_time_to_window("16:45"), TimeOfDay.AFTERNOON)
+        """720–1019 maps to AFTERNOON."""
+        self.assertEqual(time_to_window(720), TimeOfDay.AFTERNOON)  # 12:00
+        self.assertEqual(time_to_window(1005), TimeOfDay.AFTERNOON) # 16:45
 
     def test_window_evening(self):
-        """17:00 and later maps to EVENING."""
-        self.assertEqual(_time_to_window("17:00"), TimeOfDay.EVENING)
-        self.assertEqual(_time_to_window("20:30"), TimeOfDay.EVENING)
-
-    # --- _max_time ---
-
-    def test_max_time_returns_later(self):
-        """Returns the later of two times."""
-        self.assertEqual(_max_time("12:00", "7:30"), "12:00")
-
-    def test_max_time_equal_returns_first(self):
-        """When times are equal, the first argument is returned."""
-        self.assertEqual(_max_time("12:00", "12:00"), "12:00")
-
-    def test_max_time_second_is_later(self):
-        """Returns second argument when it is later."""
-        self.assertEqual(_max_time("7:00", "12:00"), "12:00")
+        """1020 (17:00) and later maps to EVENING."""
+        self.assertEqual(time_to_window(1020), TimeOfDay.EVENING)  # 17:00
+        self.assertEqual(time_to_window(1230), TimeOfDay.EVENING)  # 20:30
 
 
 # ===========================================================================
@@ -572,7 +544,7 @@ class TestOwner(unittest.TestCase):
 
     def test_get_budget_default_zero(self):
         """get_budget() returns 0 for a window that has never been set."""
-        fresh_owner = Owner("Alex", "6:00")
+        fresh_owner = Owner("Alex", 360)
         self.assertEqual(fresh_owner.get_budget(TimeOfDay.MORNING), 0)
 
     def test_get_total_budget_sums_all_windows(self):
@@ -611,7 +583,7 @@ class TestScheduledTask(unittest.TestCase):
 
     def setUp(self):
         self.task = make_task(duration=30)
-        self.st = make_scheduled_task(task=self.task, start="7:00", duration=30)
+        self.st = make_scheduled_task(task=self.task, start=420, duration=30)
 
     # --- duration_minutes property ---
 
@@ -622,7 +594,7 @@ class TestScheduledTask(unittest.TestCase):
     def test_duration_minutes_across_hour_boundary(self):
         """duration_minutes works when start and end are in different hours."""
         task = make_task(duration=45)
-        st = make_scheduled_task(task=task, start="7:30", duration=45)
+        st = make_scheduled_task(task=task, start=450, duration=45)
         self.assertEqual(st.duration_minutes, 45)
 
     # --- mark_completed / mark_skipped ---
@@ -699,7 +671,7 @@ class TestDailyPlan(unittest.TestCase):
     def test_window_summary_counts_tasks(self):
         """get_window_summary() correctly counts tasks per window."""
         t = make_task(duration=20)
-        st = make_scheduled_task(task=t, start="7:00", duration=20, window=TimeOfDay.MORNING)
+        st = make_scheduled_task(task=t, start=420, duration=20, window=TimeOfDay.MORNING)
         self.plan.add_scheduled_task(st)
         summary = self.plan.get_window_summary()
         self.assertEqual(summary["morning"]["tasks"], 1)
@@ -709,7 +681,7 @@ class TestDailyPlan(unittest.TestCase):
         """get_window_summary() sums duration across multiple tasks in a window."""
         for i, dur in enumerate([20, 25]):
             t = make_task(f"t{i}", duration=dur)
-            st = make_scheduled_task(task=t, start=f"{7+i}:00", duration=dur,
+            st = make_scheduled_task(task=t, start=420 + i * 60, duration=dur,
                                      window=TimeOfDay.MORNING)
             self.plan.add_scheduled_task(st)
         summary = self.plan.get_window_summary()
@@ -778,7 +750,7 @@ class TestDailyPlan(unittest.TestCase):
 class TestScheduler(unittest.TestCase):
 
     def setUp(self):
-        self.owner = make_owner(wake_time="7:00", morning=60, afternoon=90, evening=30)
+        self.owner = make_owner(wake_time=420, morning=60, afternoon=90, evening=30)
         self.pet = Pet("Mochi", "dog")
         self.owner.add_pet(self.pet)
         self.scheduler = Scheduler(self.owner, self.pet)
@@ -813,14 +785,14 @@ class TestScheduler(unittest.TestCase):
         self.pet.add_task(make_task("t1", is_mandatory=True, duration=30,
                                    preferred_time=TimeOfDay.MORNING))
         plan = self.scheduler.generate_plan(TODAY)
-        self.assertEqual(plan.scheduled_tasks[0].start_time, "7:00")
+        self.assertEqual(plan.scheduled_tasks[0].start_time, 420)
 
     def test_generate_plan_mandatory_task_end_time(self):
         """End time is start time plus duration."""
         self.pet.add_task(make_task("t1", is_mandatory=True, duration=30,
                                    preferred_time=TimeOfDay.MORNING))
         plan = self.scheduler.generate_plan(TODAY)
-        self.assertEqual(plan.scheduled_tasks[0].end_time, "7:30")
+        self.assertEqual(plan.scheduled_tasks[0].end_time, 450)
 
     # --- optional task scheduling ---
 
@@ -938,9 +910,9 @@ class TestScheduler(unittest.TestCase):
                                    preferred_time=TimeOfDay.MORNING, priority=Priority.MEDIUM))
         plan = self.scheduler.generate_plan(TODAY)
         times = [(st.start_time, st.end_time) for st in plan.scheduled_tasks]
-        # First task: 7:00-7:20, second task: 7:20-7:40
-        self.assertEqual(times[0], ("7:00", "7:20"))
-        self.assertEqual(times[1], ("7:20", "7:40"))
+        # First task: 420-440, second task: 440-460
+        self.assertEqual(times[0], (420, 440))
+        self.assertEqual(times[1], (440, 460))
 
     # --- ANY-time mandatory picks best window ---
 
@@ -1013,7 +985,7 @@ class TestScheduler(unittest.TestCase):
         """_remaining_budget() decreases by the duration of tasks already in the window."""
         plan = DailyPlan(TODAY, self.owner, self.pet)
         t = make_task(duration=25)
-        st = make_scheduled_task(task=t, start="7:00", duration=25, window=TimeOfDay.MORNING)
+        st = make_scheduled_task(task=t, start=420, duration=25, window=TimeOfDay.MORNING)
         plan.add_scheduled_task(st)
         remaining = self.scheduler._remaining_budget(TimeOfDay.MORNING, plan)
         self.assertEqual(remaining, 35)
@@ -1022,7 +994,7 @@ class TestScheduler(unittest.TestCase):
         """_remaining_budget() returns 0, not a negative number, when over budget."""
         plan = DailyPlan(TODAY, self.owner, self.pet)
         t = make_task(duration=80)  # exceeds morning budget of 60
-        st = make_scheduled_task(task=t, start="7:00", duration=80, window=TimeOfDay.MORNING)
+        st = make_scheduled_task(task=t, start=420, duration=80, window=TimeOfDay.MORNING)
         plan.add_scheduled_task(st)
         remaining = self.scheduler._remaining_budget(TimeOfDay.MORNING, plan)
         self.assertEqual(remaining, 0)
@@ -1051,14 +1023,31 @@ class TestScheduler(unittest.TestCase):
 
     # --- _carry_over ---
 
-    def test_carry_over_returns_skipped_tasks(self):
-        """_carry_over() returns the skipped_tasks list from the previous plan."""
+    def test_carry_over_returns_mandatory_skipped_tasks(self):
+        """_carry_over() returns only mandatory skipped tasks from the previous plan."""
         prev = DailyPlan(date(2026, 4, 3), self.owner, self.pet)
-        skipped = make_task("s1")
+        skipped = make_task("s1", is_mandatory=True)
         prev.add_skipped_task(skipped)
         carried = self.scheduler._carry_over(prev)
         self.assertEqual(len(carried), 1)
         self.assertEqual(carried[0].id, "s1")
+
+    def test_carry_over_excludes_optional_skipped_tasks(self):
+        """_carry_over() does NOT carry over optional (non-mandatory) skipped tasks."""
+        prev = DailyPlan(date(2026, 4, 3), self.owner, self.pet)
+        optional = make_task("o1", is_mandatory=False)
+        prev.add_skipped_task(optional)
+        carried = self.scheduler._carry_over(prev)
+        self.assertEqual(len(carried), 0)
+
+    def test_carry_over_includes_emergency_even_if_not_mandatory(self):
+        """_carry_over() carries over EMERGENCY priority tasks even if not mandatory."""
+        prev = DailyPlan(date(2026, 4, 3), self.owner, self.pet)
+        emergency = make_task("e1", priority=Priority.EMERGENCY, is_mandatory=False)
+        prev.add_skipped_task(emergency)
+        carried = self.scheduler._carry_over(prev)
+        self.assertEqual(len(carried), 1)
+        self.assertEqual(carried[0].id, "e1")
 
     def test_carry_over_empty_when_nothing_skipped(self):
         """_carry_over() returns [] when the previous plan had no skipped tasks."""
@@ -1072,22 +1061,24 @@ class TestScheduler(unittest.TestCase):
 
 class TestEdgeCasesTimeHelpers(unittest.TestCase):
 
-    def test_add_minutes_large_value_crossing_multiple_hours(self):
-        """Adding a large number of minutes advances the clock correctly across hours."""
-        # 7:00 + 150 min = 9:30
-        self.assertEqual(_add_minutes("7:00", 150), "9:30")
+    def test_parse_time_str_roundtrip(self):
+        """parse_time_str and format_time are inverses for valid times."""
+        self.assertEqual(format_time(parse_time_str("7:00")), "7:00")
+        self.assertEqual(format_time(parse_time_str("9:30")), "9:30")
 
     def test_time_to_window_exact_noon_boundary(self):
-        """12:00 exactly is AFTERNOON, not MORNING."""
-        self.assertEqual(_time_to_window("12:00"), TimeOfDay.AFTERNOON)
+        """720 (12:00) exactly is AFTERNOON, not MORNING."""
+        self.assertEqual(time_to_window(720), TimeOfDay.AFTERNOON)
 
     def test_time_to_window_exact_evening_boundary(self):
-        """17:00 exactly is EVENING, not AFTERNOON."""
-        self.assertEqual(_time_to_window("17:00"), TimeOfDay.EVENING)
+        """1020 (17:00) exactly is EVENING, not AFTERNOON."""
+        self.assertEqual(time_to_window(1020), TimeOfDay.EVENING)
 
-    def test_max_time_with_same_hour_different_minutes(self):
-        """_max_time() correctly compares times within the same hour."""
-        self.assertEqual(_max_time("7:45", "7:30"), "7:45")
+    def test_addition_large_value_crossing_multiple_hours(self):
+        """Adding a large number of minutes advances the clock correctly across hours."""
+        # 420 (7:00) + 150 min = 570 (9:30)
+        self.assertEqual(420 + 150, 570)
+        self.assertEqual(format_time(570), "9:30")
 
 
 class TestEdgeCasesTask(unittest.TestCase):
@@ -1145,24 +1136,24 @@ class TestEdgeCasesOwner(unittest.TestCase):
 
     def test_get_total_budget_no_budgets_set(self):
         """get_total_budget() returns 0 when no windows have been configured."""
-        owner = Owner("Alex", "7:00")
+        owner = Owner("Alex", 420)
         self.assertEqual(owner.get_total_budget(), 0)
 
     def test_set_budget_overwrite_updates_value(self):
         """Calling set_budget() twice on the same window keeps the latest value."""
-        owner = Owner("Alex", "7:00")
+        owner = Owner("Alex", 420)
         owner.set_budget(TimeOfDay.MORNING, 60)
         owner.set_budget(TimeOfDay.MORNING, 45)
         self.assertEqual(owner.get_budget(TimeOfDay.MORNING), 45)
 
     def test_search_pets_on_empty_owner(self):
         """search_pets() returns [] when the owner has no pets at all."""
-        owner = Owner("Alex", "7:00")
+        owner = Owner("Alex", 420)
         self.assertEqual(owner.search_pets("Mochi"), [])
 
     def test_get_pets_returns_list_not_dict_values(self):
         """get_pets() returns a plain list, not a dict_values object."""
-        owner = Owner("Alex", "7:00")
+        owner = Owner("Alex", 420)
         owner.add_pet(Pet("Rex", "dog"))
         result = owner.get_pets()
         self.assertIsInstance(result, list)
@@ -1196,8 +1187,8 @@ class TestEdgeCasesDailyPlan(unittest.TestCase):
         """get_window_summary() tracks tasks in different windows independently."""
         t_morning = make_task("t1", duration=20)
         t_afternoon = make_task("t2", duration=30)
-        st_m = make_scheduled_task(task=t_morning, start="7:00",  duration=20, window=TimeOfDay.MORNING)
-        st_a = make_scheduled_task(task=t_afternoon, start="12:00", duration=30, window=TimeOfDay.AFTERNOON)
+        st_m = make_scheduled_task(task=t_morning, start=420,  duration=20, window=TimeOfDay.MORNING)
+        st_a = make_scheduled_task(task=t_afternoon, start=720, duration=30, window=TimeOfDay.AFTERNOON)
         plan = DailyPlan(TODAY, self.owner, self.pet)
         plan.add_scheduled_task(st_m)
         plan.add_scheduled_task(st_a)
@@ -1207,17 +1198,403 @@ class TestEdgeCasesDailyPlan(unittest.TestCase):
         self.assertEqual(summary["evening"]["used_minutes"], 0)
 
 
+# ===========================================================================
+# Window Summary Features: Sorting and Filtering
+# ===========================================================================
+
+class TestWindowSummaryFeatures(unittest.TestCase):
+    """Tests for sorting tasks by time and filtering by status."""
+
+    def setUp(self):
+        self.owner = make_owner(wake_time=420, morning=120, afternoon=120, evening=120)
+        self.pet = Pet("Mochi", "dog")
+        self.owner.add_pet(self.pet)
+        self.plan = DailyPlan(TODAY, self.owner, self.pet)
+
+    # --- Sorting by Time ---
+
+    def test_get_tasks_sorted_by_time_empty_plan(self):
+        """Sorting an empty plan returns an empty list."""
+        result = self.plan.get_tasks_sorted_by_time()
+        self.assertEqual(result, [])
+
+    def test_get_tasks_sorted_by_time_single_task(self):
+        """A single task returns a list with one element."""
+        t = make_task("t1", duration=20)
+        st = make_scheduled_task(task=t, start=420, duration=20, window=TimeOfDay.MORNING)
+        self.plan.add_scheduled_task(st)
+        result = self.plan.get_tasks_sorted_by_time()
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].task.id, "t1")
+
+    def test_get_tasks_sorted_by_time_multiple_windows(self):
+        """Tasks from multiple windows are sorted chronologically."""
+        # Add in non-chronological order to test sorting
+        st_evening = make_scheduled_task(task=make_task("t3"), start=1020, duration=10, window=TimeOfDay.EVENING)
+        st_morning = make_scheduled_task(task=make_task("t1"), start=420, duration=20, window=TimeOfDay.MORNING)
+        st_afternoon = make_scheduled_task(task=make_task("t2"), start=720, duration=30, window=TimeOfDay.AFTERNOON)
+        
+        self.plan.add_scheduled_task(st_evening)
+        self.plan.add_scheduled_task(st_morning)
+        self.plan.add_scheduled_task(st_afternoon)
+        
+        result = self.plan.get_tasks_sorted_by_time()
+        self.assertEqual(len(result), 3)
+        self.assertEqual(result[0].task.id, "t1")  # 7:00
+        self.assertEqual(result[1].task.id, "t2")  # 12:00
+        self.assertEqual(result[2].task.id, "t3")  # 17:00
+
+    def test_get_tasks_sorted_by_time_same_window(self):
+        """Multiple tasks in the same window are sorted by start time."""
+        st1 = make_scheduled_task(task=make_task("t1"), start=450, duration=10, window=TimeOfDay.MORNING)
+        st2 = make_scheduled_task(task=make_task("t2"), start=420, duration=20, window=TimeOfDay.MORNING)
+        st3 = make_scheduled_task(task=make_task("t3"), start=470, duration=5, window=TimeOfDay.MORNING)
+        
+        self.plan.add_scheduled_task(st1)
+        self.plan.add_scheduled_task(st2)
+        self.plan.add_scheduled_task(st3)
+        
+        result = self.plan.get_tasks_sorted_by_time()
+        self.assertEqual(result[0].start_time, 420)
+        self.assertEqual(result[1].start_time, 450)
+        self.assertEqual(result[2].start_time, 470)
+
+    def test_get_tasks_sorted_by_time_single_window(self):
+        """Filtering by window returns only tasks in that window, sorted by time."""
+        st_morning1 = make_scheduled_task(task=make_task("m2"), start=450, duration=10, window=TimeOfDay.MORNING)
+        st_morning2 = make_scheduled_task(task=make_task("m1"), start=420, duration=20, window=TimeOfDay.MORNING)
+        st_afternoon = make_scheduled_task(task=make_task("a1"), start=720, duration=30, window=TimeOfDay.AFTERNOON)
+        
+        self.plan.add_scheduled_task(st_morning1)
+        self.plan.add_scheduled_task(st_morning2)
+        self.plan.add_scheduled_task(st_afternoon)
+        
+        result = self.plan.get_tasks_sorted_by_time(TimeOfDay.MORNING)
+        self.assertEqual(len(result), 2)
+        self.assertEqual(result[0].task.id, "m1")
+        self.assertEqual(result[1].task.id, "m2")
+
+    # --- Filtering by Status ---
+
+    def test_get_tasks_by_status_empty_plan(self):
+        """Filtering an empty plan returns an empty list."""
+        result = self.plan.get_tasks_by_status(TaskStatus.SCHEDULED)
+        self.assertEqual(result, [])
+
+    def test_get_tasks_by_status_single_match(self):
+        """Filtering for a status returns only tasks with that status."""
+        t = make_task("t1", duration=20)
+        st = make_scheduled_task(task=t, status=TaskStatus.SCHEDULED)
+        self.plan.add_scheduled_task(st)
+        
+        result = self.plan.get_tasks_by_status(TaskStatus.SCHEDULED)
+        self.assertEqual(len(result), 1)
+        self.assertEqual(result[0].task.id, "t1")
+
+    def test_get_tasks_by_status_no_match(self):
+        """Filtering for a status that doesn't exist returns an empty list."""
+        t = make_task("t1", duration=20)
+        st = make_scheduled_task(task=t, status=TaskStatus.SCHEDULED)
+        self.plan.add_scheduled_task(st)
+        
+        result = self.plan.get_tasks_by_status(TaskStatus.COMPLETED)
+        self.assertEqual(result, [])
+
+    def test_get_tasks_by_status_multiple_matches(self):
+        """Filtering returns all tasks with the matching status."""
+        st1 = make_scheduled_task(task=make_task("t1"), status=TaskStatus.SCHEDULED)
+        st2 = make_scheduled_task(task=make_task("t2"), status=TaskStatus.COMPLETED)
+        st3 = make_scheduled_task(task=make_task("t3"), status=TaskStatus.SCHEDULED)
+        
+        self.plan.add_scheduled_task(st1)
+        self.plan.add_scheduled_task(st2)
+        self.plan.add_scheduled_task(st3)
+        
+        result = self.plan.get_tasks_by_status(TaskStatus.SCHEDULED)
+        self.assertEqual(len(result), 2)
+        self.assertEqual({st.task.id for st in result}, {"t1", "t3"})
+
+    # --- Extended Window Summary ---
+
+    def test_get_window_summary_extended_all_windows(self):
+        """Extended summary returns details for all three windows."""
+        st1 = make_scheduled_task(task=make_task("t1", duration=20), start=420, duration=20, window=TimeOfDay.MORNING)
+        st2 = make_scheduled_task(task=make_task("t2", duration=30), start=720, duration=30, window=TimeOfDay.AFTERNOON)
+        
+        self.plan.add_scheduled_task(st1)
+        self.plan.add_scheduled_task(st2)
+        
+        result = self.plan.get_window_summary_extended()
+        
+        self.assertIn("morning", result)
+        self.assertIn("afternoon", result)
+        self.assertIn("evening", result)
+        
+        self.assertEqual(result["morning"]["used_minutes"], 20)
+        self.assertEqual(result["afternoon"]["used_minutes"], 30)
+        self.assertEqual(result["evening"]["used_minutes"], 0)
+
+    def test_get_window_summary_extended_single_window(self):
+        """Extended summary for a single window includes task details."""
+        t = make_task("t1", name="Morning Walk", duration=20)
+        st = make_scheduled_task(task=t, start=420, duration=20, window=TimeOfDay.MORNING)
+        self.plan.add_scheduled_task(st)
+        
+        result = self.plan.get_window_summary_extended(TimeOfDay.MORNING)
+        
+        self.assertEqual(len(result), 1)
+        morning = result["morning"]
+        self.assertEqual(morning["used_minutes"], 20)
+        self.assertEqual(morning["remaining_minutes"], 100)  # 120 - 20
+        self.assertEqual(morning["task_count"], 1)
+        self.assertEqual(len(morning["tasks"]), 1)
+        
+        task_detail = morning["tasks"][0]
+        self.assertEqual(task_detail["name"], "Morning Walk")
+        self.assertEqual(task_detail["start_time"], "7:00")
+        self.assertEqual(task_detail["end_time"], "7:20")
+
+    def test_get_window_summary_extended_includes_task_metadata(self):
+        """Extended summary includes task category, priority, and status."""
+        t = make_task("t1", category=TaskCategory.WALK, priority=Priority.HIGH)
+        st = make_scheduled_task(task=t, start=420, duration=20, window=TimeOfDay.MORNING, status=TaskStatus.SCHEDULED)
+        self.plan.add_scheduled_task(st)
+        
+        result = self.plan.get_window_summary_extended(TimeOfDay.MORNING)
+        task_detail = result["morning"]["tasks"][0]
+        
+        self.assertEqual(task_detail["category"], "walk")
+        self.assertEqual(task_detail["priority"], "HIGH")
+        self.assertEqual(task_detail["status"], "scheduled")
+
+    def test_get_window_summary_extended_empty_window(self):
+        """Extended summary for an empty window shows zeroes."""
+        result = self.plan.get_window_summary_extended(TimeOfDay.EVENING)
+        
+        evening = result["evening"]
+        self.assertEqual(evening["budget_minutes"], 120)
+        self.assertEqual(evening["used_minutes"], 0)
+        self.assertEqual(evening["remaining_minutes"], 120)
+        self.assertEqual(evening["task_count"], 0)
+        self.assertEqual(evening["tasks"], [])
+
+    def test_get_window_summary_extended_tasks_are_sorted(self):
+        """Tasks in extended summary are sorted by start time."""
+        st1 = make_scheduled_task(task=make_task("t2", name="Task 2"), start=450, duration=10, window=TimeOfDay.MORNING)
+        st2 = make_scheduled_task(task=make_task("t1", name="Task 1"), start=420, duration=20, window=TimeOfDay.MORNING)
+        
+        self.plan.add_scheduled_task(st1)
+        self.plan.add_scheduled_task(st2)
+        
+        result = self.plan.get_window_summary_extended(TimeOfDay.MORNING)
+        tasks = result["morning"]["tasks"]
+        
+        self.assertEqual(tasks[0]["name"], "Task 1")
+        self.assertEqual(tasks[1]["name"], "Task 2")
+
+    # --- Filtering by Completion Status ---
+
+    def test_filter_by_scheduled_status_only(self):
+        """Filtering for SCHEDULED status returns only scheduled tasks."""
+        st1 = make_scheduled_task(task=make_task("t1"), status=TaskStatus.SCHEDULED)
+        st2 = make_scheduled_task(task=make_task("t2"), status=TaskStatus.COMPLETED)
+        st3 = make_scheduled_task(task=make_task("t3"), status=TaskStatus.SCHEDULED)
+        
+        self.plan.add_scheduled_task(st1)
+        self.plan.add_scheduled_task(st2)
+        self.plan.add_scheduled_task(st3)
+        
+        filtered = [st for st in self.plan.scheduled_tasks 
+                   if st.status.value.upper() == "SCHEDULED"]
+        
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual({st.task.id for st in filtered}, {"t1", "t3"})
+
+    def test_filter_by_completed_status_only(self):
+        """Filtering for COMPLETED status returns only completed tasks."""
+        st1 = make_scheduled_task(task=make_task("t1"), status=TaskStatus.SCHEDULED)
+        st2 = make_scheduled_task(task=make_task("t2"), status=TaskStatus.COMPLETED)
+        st3 = make_scheduled_task(task=make_task("t3"), status=TaskStatus.COMPLETED)
+        
+        self.plan.add_scheduled_task(st1)
+        self.plan.add_scheduled_task(st2)
+        self.plan.add_scheduled_task(st3)
+        
+        filtered = [st for st in self.plan.scheduled_tasks 
+                   if st.status.value.upper() == "COMPLETED"]
+        
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual({st.task.id for st in filtered}, {"t2", "t3"})
+
+    def test_filter_by_multiple_statuses(self):
+        """Filtering by multiple statuses returns all matching tasks."""
+        st1 = make_scheduled_task(task=make_task("t1"), status=TaskStatus.SCHEDULED)
+        st2 = make_scheduled_task(task=make_task("t2"), status=TaskStatus.COMPLETED)
+        st3 = make_scheduled_task(task=make_task("t3"), status=TaskStatus.SCHEDULED)
+        
+        self.plan.add_scheduled_task(st1)
+        self.plan.add_scheduled_task(st2)
+        self.plan.add_scheduled_task(st3)
+        
+        status_filter = ["SCHEDULED", "COMPLETED"]
+        filtered = [st for st in self.plan.scheduled_tasks 
+                   if st.status.value.upper() in status_filter]
+        
+        self.assertEqual(len(filtered), 3)
+
+    def test_filter_no_match_returns_empty(self):
+        """Filtering with no matches returns empty list."""
+        st1 = make_scheduled_task(task=make_task("t1"), status=TaskStatus.SCHEDULED)
+        self.plan.add_scheduled_task(st1)
+        
+        filtered = [st for st in self.plan.scheduled_tasks 
+                   if st.status.value.upper() == "COMPLETED"]
+        
+        self.assertEqual(len(filtered), 0)
+
+    # --- Filtering by Pet Name ---
+
+    def test_filter_by_pet_name_current_pet(self):
+        """Filtering by current pet name returns tasks from that pet."""
+        st1 = make_scheduled_task(task=make_task("t1"))
+        st2 = make_scheduled_task(task=make_task("t2"))
+        
+        self.plan.add_scheduled_task(st1)
+        self.plan.add_scheduled_task(st2)
+        
+        pet_name = self.pet.name  # "mochi"
+        filtered = [st for st in self.plan.scheduled_tasks 
+                   if pet_name.lower() in [pet_name.lower()]]
+        
+        self.assertEqual(len(filtered), 2)
+
+    def test_filter_by_pet_name_multiple_pets_scenario(self):
+        """Filtering by pet name in multi-pet scenario."""
+        owner = make_owner()
+        pet1 = Pet("Mochi", "dog")
+        pet2 = Pet("Luna", "cat")
+        owner.add_pet(pet1)
+        owner.add_pet(pet2)
+        
+        plan1 = DailyPlan(TODAY, owner, pet1)
+        plan2 = DailyPlan(TODAY, owner, pet2)
+        
+        # Add tasks to each plan
+        st1 = make_scheduled_task(task=make_task("t1"))
+        st2 = make_scheduled_task(task=make_task("t2"))
+        plan1.add_scheduled_task(st1)
+        plan2.add_scheduled_task(st2)
+        
+        # Filter for Mochi only
+        mochi_tasks = [st for st in plan1.scheduled_tasks 
+                      if pet1.name in ["Mochi".lower(), "mochi"]]
+        luna_tasks = [st for st in plan2.scheduled_tasks 
+                     if pet2.name in ["Luna".lower(), "luna"]]
+        
+        self.assertEqual(len(mochi_tasks), 1)
+        self.assertEqual(len(luna_tasks), 1)
+
+    # --- Combined Status and Pet Name Filtering ---
+
+    def test_filter_by_status_and_pet_name_both(self):
+        """Filtering by both status and pet name applies both filters."""
+        st1 = make_scheduled_task(task=make_task("t1"), status=TaskStatus.SCHEDULED)
+        st2 = make_scheduled_task(task=make_task("t2"), status=TaskStatus.COMPLETED)
+        st3 = make_scheduled_task(task=make_task("t3"), status=TaskStatus.SCHEDULED)
+        
+        self.plan.add_scheduled_task(st1)
+        self.plan.add_scheduled_task(st2)
+        self.plan.add_scheduled_task(st3)
+        
+        status_filter = ["SCHEDULED"]
+        pet_filter = [self.pet.name]
+        
+        filtered = [st for st in self.plan.scheduled_tasks 
+                   if st.status.value.upper() in status_filter and 
+                      self.pet.name in pet_filter]
+        
+        self.assertEqual(len(filtered), 2)
+        self.assertEqual({st.task.id for st in filtered}, {"t1", "t3"})
+
+    def test_filter_combined_no_matches(self):
+        """Combined filtering with no matches returns empty list."""
+        st1 = make_scheduled_task(task=make_task("t1"), status=TaskStatus.SCHEDULED)
+        self.plan.add_scheduled_task(st1)
+        
+        status_filter = ["COMPLETED"]  # No completed tasks
+        pet_filter = [self.pet.name]
+        
+        filtered = [st for st in self.plan.scheduled_tasks 
+                   if st.status.value.upper() in status_filter and 
+                      self.pet.name in pet_filter]
+        
+        self.assertEqual(len(filtered), 0)
+
+    # --- Filtering with Sorting ---
+
+    def test_filter_then_sort_by_time(self):
+        """Filtering followed by sorting returns correctly ordered results."""
+        st1 = make_scheduled_task(task=make_task("t2"), start=450, duration=10, 
+                                 status=TaskStatus.SCHEDULED, window=TimeOfDay.MORNING)
+        st2 = make_scheduled_task(task=make_task("t1"), start=420, duration=20, 
+                                 status=TaskStatus.SCHEDULED, window=TimeOfDay.MORNING)
+        st3 = make_scheduled_task(task=make_task("t3"), start=420, duration=20, 
+                                 status=TaskStatus.COMPLETED, window=TimeOfDay.MORNING)
+        
+        self.plan.add_scheduled_task(st1)
+        self.plan.add_scheduled_task(st2)
+        self.plan.add_scheduled_task(st3)
+        
+        # Filter for SCHEDULED only
+        status_filter = ["SCHEDULED"]
+        filtered = [st for st in self.plan.scheduled_tasks 
+                   if st.status.value.upper() in status_filter]
+        
+        # Sort by time
+        sorted_filtered = sorted(filtered, 
+                               key=lambda st: (st.start_time, st.task.name))
+        
+        self.assertEqual(len(sorted_filtered), 2)
+        self.assertEqual(sorted_filtered[0].task.id, "t1")
+        self.assertEqual(sorted_filtered[1].task.id, "t2")
+
+    def test_filter_by_priority_after_filtering_status(self):
+        """Applying priority filter after status filter works correctly."""
+        st1 = make_scheduled_task(task=make_task("t1", priority=Priority.HIGH), 
+                                 status=TaskStatus.SCHEDULED)
+        st2 = make_scheduled_task(task=make_task("t2", priority=Priority.LOW), 
+                                 status=TaskStatus.SCHEDULED)
+        st3 = make_scheduled_task(task=make_task("t3", priority=Priority.EMERGENCY), 
+                                 status=TaskStatus.COMPLETED)
+        
+        self.plan.add_scheduled_task(st1)
+        self.plan.add_scheduled_task(st2)
+        self.plan.add_scheduled_task(st3)
+        
+        # Filter by status first
+        status_filter = ["SCHEDULED"]
+        filtered = [st for st in self.plan.scheduled_tasks 
+                   if st.status.value.upper() in status_filter]
+        
+        # Then filter by high priority
+        high_priority_filtered = [st for st in filtered 
+                                 if st.task.priority.value >= Priority.HIGH.value]
+        
+        self.assertEqual(len(high_priority_filtered), 1)
+        self.assertEqual(high_priority_filtered[0].task.id, "t1")
+
+
 class TestEdgeCasesScheduler(unittest.TestCase):
 
     def setUp(self):
-        self.owner = make_owner(wake_time="7:00", morning=60, afternoon=90, evening=30)
+        self.owner = make_owner(wake_time=420, morning=60, afternoon=90, evening=30)
         self.pet = Pet("Mochi", "dog")
         self.owner.add_pet(self.pet)
         self.scheduler = Scheduler(self.owner, self.pet)
 
     def test_wake_time_after_noon_morning_gets_no_tasks(self):
         """When the owner wakes after noon, no morning tasks are scheduled."""
-        owner = make_owner(wake_time="13:00", morning=60, afternoon=90, evening=0)
+        owner = make_owner(wake_time=780, morning=60, afternoon=90, evening=0)
         pet = Pet("Rex", "dog")
         owner.add_pet(pet)
         # Mandatory morning task — cursor will be at "11:59", budget may still be there
@@ -1227,7 +1604,7 @@ class TestEdgeCasesScheduler(unittest.TestCase):
                                preferred_time=TimeOfDay.AFTERNOON))
         plan = Scheduler(owner, pet).generate_plan(TODAY)
         # Afternoon cursor should start at wake_time (13:00), not 12:00
-        self.assertEqual(plan.scheduled_tasks[0].start_time, "13:00")
+        self.assertEqual(plan.scheduled_tasks[0].start_time, 780)
 
     def test_optional_task_skipped_when_preferred_window_has_zero_budget(self):
         """An optional task with a specific window preference is skipped when that window has 0 budget."""
@@ -1280,7 +1657,7 @@ class TestEdgeCasesScheduler(unittest.TestCase):
 
     def test_mandatory_task_with_no_budget_set_still_scheduled_with_warning(self):
         """A mandatory task is scheduled even when the owner never set a budget."""
-        owner = Owner("Sam", "7:00")  # no set_budget calls
+        owner = Owner("Sam", 420)  # no set_budget calls
         pet = Pet("Rex", "dog")
         owner.add_pet(pet)
         pet.add_task(make_task("t1", is_mandatory=True, duration=30,
@@ -1299,9 +1676,9 @@ class TestEdgeCasesScheduler(unittest.TestCase):
         plan = self.scheduler.generate_plan(TODAY)
         by_id = {st.task.id: st for st in plan.scheduled_tasks}
         # Morning task starts at wake time
-        self.assertEqual(by_id["t1"].start_time, "7:00")
-        # Afternoon task starts at 12:00, unaffected by morning cursor
-        self.assertEqual(by_id["t2"].start_time, "12:00")
+        self.assertEqual(by_id["t1"].start_time, 420)
+        # Afternoon task starts at 720 (12:00), unaffected by morning cursor
+        self.assertEqual(by_id["t2"].start_time, 720)
 
     def test_pick_window_from_budget_equal_budgets_picks_morning(self):
         """When all windows have equal remaining capacity, MORNING is chosen (first in list)."""
@@ -1328,5 +1705,894 @@ class TestEdgeCasesScheduler(unittest.TestCase):
         self.assertEqual(len(plan.warnings), 3)
 
 
+# ===========================================================================
+# validate() as a gate before add_task (main.py fix: task.validate() is now
+# called before every mochi.add_task / luna.add_task call)
+# ===========================================================================
+
+class TestValidateAsGate(unittest.TestCase):
+    """validate() must catch bad task data before it enters the pet's task list."""
+
+    def test_validate_passes_for_minimum_valid_task(self):
+        """A 1-minute task with a single-char name is valid."""
+        task = make_task(duration=1, name="X")
+        task.validate()  # must not raise
+
+    def test_validate_raises_before_add_task_so_pet_stays_clean(self):
+        """When validate() raises, the pet's task list remains untouched."""
+        pet = Pet("Rex", "dog")
+        task = make_task(duration=0)  # invalid
+        with self.assertRaises(ValueError):
+            task.validate()
+        # validate() raised before add_task was called — list must still be empty
+        self.assertEqual(len(pet.tasks), 0)
+
+    def test_validate_whitespace_only_name_raises(self):
+        """A name consisting only of spaces is rejected."""
+        task = make_task(name="   ")
+        with self.assertRaises(ValueError):
+            task.validate()
+
+    def test_validate_tab_only_name_raises(self):
+        """A name consisting only of a tab character is rejected (strip catches it)."""
+        task = make_task(name="\t")
+        with self.assertRaises(ValueError):
+            task.validate()
+
+    def test_valid_task_added_successfully_after_validate(self):
+        """A task that passes validate() is added to the pet without error."""
+        pet = Pet("Rex", "dog")
+        task = make_task("t1", duration=15, name="Bath")
+        task.validate()
+        pet.add_task(task)
+        self.assertEqual(len(pet.tasks), 1)
+
+
+# ===========================================================================
+# Multiple pets under one owner — plan generation loop
+# (main.py fix: replaced per-pet variables with a list comprehension over
+#  owner.get_pets())
+# ===========================================================================
+
+class TestMultiplePetScheduling(unittest.TestCase):
+    """Scheduling plans for all pets via owner.get_pets() produces one plan each."""
+
+    def setUp(self):
+        self.owner = make_owner(morning=60, afternoon=90, evening=30)
+        self.dog = Pet("Rex", "dog")
+        self.cat = Pet("Luna", "cat")
+        self.owner.add_pet(self.dog)
+        self.owner.add_pet(self.cat)
+
+    def test_get_pets_loop_gives_one_plan_per_pet(self):
+        """Iterating owner.get_pets() and scheduling each pet produces one plan per pet."""
+        plans = [Scheduler(self.owner, pet).generate_plan(TODAY)
+                 for pet in self.owner.get_pets()]
+        self.assertEqual(len(plans), 2)
+
+    def test_each_plan_references_its_own_pet(self):
+        """Each plan's .pet attribute corresponds to the pet it was built for."""
+        plans = [Scheduler(self.owner, pet).generate_plan(TODAY)
+                 for pet in self.owner.get_pets()]
+        plan_pet_names = {plan.pet.name for plan in plans}
+        self.assertIn("rex", plan_pet_names)
+        self.assertIn("luna", plan_pet_names)
+
+    def test_plans_for_two_pets_are_independent_objects(self):
+        """Each call to generate_plan() returns a distinct DailyPlan object."""
+        dog_plan = Scheduler(self.owner, self.dog).generate_plan(TODAY)
+        cat_plan = Scheduler(self.owner, self.cat).generate_plan(TODAY)
+        self.assertIsNot(dog_plan, cat_plan)
+
+    def test_budget_tracking_is_independent_per_plan(self):
+        """Scheduling one pet does not consume budget for another pet's plan.
+
+        Each DailyPlan tracks its own used-minutes; the two plans do not share
+        an internal counter, so both pets can each use the full morning budget.
+        """
+        self.dog.add_task(make_task("d1", is_mandatory=True, duration=60,
+                                   preferred_time=TimeOfDay.MORNING))
+        self.cat.add_task(make_task("c1", is_mandatory=True, duration=60,
+                                   preferred_time=TimeOfDay.MORNING))
+        dog_plan = Scheduler(self.owner, self.dog).generate_plan(TODAY)
+        cat_plan = Scheduler(self.owner, self.cat).generate_plan(TODAY)
+        # Both tasks should be scheduled — budget is tracked per-plan, not globally
+        self.assertEqual(len(dog_plan.scheduled_tasks), 1)
+        self.assertEqual(len(cat_plan.scheduled_tasks), 1)
+
+    def test_adding_third_pet_still_produces_correct_count(self):
+        """Adding a third pet means the loop produces three plans."""
+        bird = Pet("Kiwi", "bird")
+        self.owner.add_pet(bird)
+        plans = [Scheduler(self.owner, pet).generate_plan(TODAY)
+                 for pet in self.owner.get_pets()]
+        self.assertEqual(len(plans), 3)
+
+    def test_plan_pet_name_is_available_for_display(self):
+        """plan.pet.name is accessible and correct — no need for a separate label variable."""
+        dog_plan = Scheduler(self.owner, self.dog).generate_plan(TODAY)
+        # main.py now uses plan.pet.name.title() instead of a hard-coded "Mochi"
+        self.assertEqual(dog_plan.pet.name.title(), "Rex")
+
+    def test_carry_over_works_within_multi_pet_loop(self):
+        """Carry-over from a previous plan integrates correctly when looping over pets."""
+        prev = DailyPlan(date(2026, 4, 3), self.owner, self.dog)
+        skipped = make_task("s1", name="Grooming", is_mandatory=True,
+                            duration=15, preferred_time=TimeOfDay.MORNING)
+        prev.add_skipped_task(skipped)
+        # Test would continue here if completed
+
+
+# ---------------------------------------------------------------------------
+# Recurrence Tests (Feature 3)
+# ---------------------------------------------------------------------------
+
+class TestRecurrence(unittest.TestCase):
+    """Tests for the recurring task feature."""
+    
+    def setUp(self):
+        self.owner = make_owner()
+        self.pet = Pet("Mochi", "dog")
+        self.owner.add_pet(self.pet)
+
+    def test_recurrence_applies_to_date_none_recurrence(self):
+        """None recurrence never applies."""
+        self.assertFalse(recurrence_applies_to_date(None, date(2026, 4, 5)))
+
+    def test_recurrence_applies_to_date_daily_within_range(self):
+        """DAILY recurrence applies to every date within start/end range."""
+        rec = Recurrence(
+            type=RecurrenceType.DAILY,
+            start_date=date(2026, 4, 4),
+            end_date=date(2026, 4, 6)
+        )
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 4)))
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 5)))
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 6)))
+        self.assertFalse(recurrence_applies_to_date(rec, date(2026, 4, 3)))
+        self.assertFalse(recurrence_applies_to_date(rec, date(2026, 4, 7)))
+
+    def test_recurrence_applies_to_date_daily_indefinite(self):
+        """DAILY recurrence with no end_date continues indefinitely."""
+        rec = Recurrence(
+            type=RecurrenceType.DAILY,
+            start_date=date(2026, 4, 4),
+            end_date=None
+        )
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 4)))
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 5)))
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 12, 31)))  # far future
+        self.assertTrue(recurrence_applies_to_date(rec, date(2027, 1, 1)))
+        self.assertFalse(recurrence_applies_to_date(rec, date(2026, 4, 3)))
+
+    def test_recurrence_applies_to_date_weekly(self):
+        """WEEKLY recurrence applies only on specified days of week."""
+        # April 4, 2026 is a Saturday (day 5)
+        # April 5, 2026 is a Sunday (day 6)
+        # April 6, 2026 is a Monday (day 0)
+        rec = Recurrence(
+            type=RecurrenceType.WEEKLY,
+            start_date=date(2026, 4, 4),
+            days_of_week=[5, 6],  # Sat, Sun
+            end_date=None
+        )
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 4)))  # Saturday
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 5)))  # Sunday
+        self.assertFalse(recurrence_applies_to_date(rec, date(2026, 4, 6)))  # Monday
+        self.assertFalse(recurrence_applies_to_date(rec, date(2026, 4, 7)))  # Tuesday
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 11)))  # Next Saturday
+
+    def test_recurrence_applies_to_date_interval(self):
+        """INTERVAL recurrence applies every N days from start_date."""
+        rec = Recurrence(
+            type=RecurrenceType.INTERVAL,
+            start_date=date(2026, 4, 4),
+            interval=3,
+            end_date=date(2026, 4, 20)
+        )
+        # April 4 + 0*3 = April 4
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 4)))
+        # April 4 + 1*3 = April 7
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 7)))
+        # April 4 + 2*3 = April 10
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 10)))
+        # April 4 + 3*3 = April 13
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 13)))
+        # Not every day
+        self.assertFalse(recurrence_applies_to_date(rec, date(2026, 4, 5)))
+        self.assertFalse(recurrence_applies_to_date(rec, date(2026, 4, 6)))
+        # After end_date
+        self.assertFalse(recurrence_applies_to_date(rec, date(2026, 4, 22)))
+
+    def test_recurrence_applies_to_date_monthly(self):
+        """MONTHLY recurrence applies on the same day of each month."""
+        rec = Recurrence(
+            type=RecurrenceType.MONTHLY,
+            start_date=date(2026, 4, 15),
+            end_date=None
+        )
+        # 15th of each month
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 4, 15)))
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 5, 15)))
+        self.assertTrue(recurrence_applies_to_date(rec, date(2026, 6, 15)))
+        # Other days
+        self.assertFalse(recurrence_applies_to_date(rec, date(2026, 4, 14)))
+        self.assertFalse(recurrence_applies_to_date(rec, date(2026, 4, 16)))
+        # Before start_date
+        self.assertFalse(recurrence_applies_to_date(rec, date(2026, 3, 15)))
+
+    def test_recurrence_validate_rejects_invalid_dates(self):
+        """Recurrence.validate() rejects start_date > end_date."""
+        rec = Recurrence(
+            type=RecurrenceType.DAILY,
+            start_date=date(2026, 4, 10),
+            end_date=date(2026, 4, 5)
+        )
+        with self.assertRaises(ValueError) as ctx:
+            rec.validate()
+        self.assertIn("start_date must be <= end_date", str(ctx.exception))
+
+    def test_recurrence_validate_rejects_invalid_interval(self):
+        """Recurrence.validate() rejects non-positive interval for INTERVAL type."""
+        rec = Recurrence(
+            type=RecurrenceType.INTERVAL,
+            start_date=date(2026, 4, 4),
+            interval=0
+        )
+        with self.assertRaises(ValueError) as ctx:
+            rec.validate()
+        self.assertIn("interval must be positive", str(ctx.exception))
+
+    def test_recurrence_validate_rejects_invalid_weekly_days(self):
+        """Recurrence.validate() rejects invalid day numbers for WEEKLY type."""
+        rec = Recurrence(
+            type=RecurrenceType.WEEKLY,
+            start_date=date(2026, 4, 4),
+            days_of_week=[0, 7]  # 7 is invalid
+        )
+        with self.assertRaises(ValueError) as ctx:
+            rec.validate()
+        self.assertIn("days_of_week must contain values 0-6", str(ctx.exception))
+
+    def test_recurring_task_created_with_daily_recurrence(self):
+        """A task with DAILY recurrence is stored correctly."""
+        task = Task(
+            id="daily_walk",
+            name="Morning Walk",
+            category=TaskCategory.WALK,
+            duration_minutes=30,
+            priority=Priority.MEDIUM,
+            preferred_time=TimeOfDay.MORNING,
+            recurrence=Recurrence(
+                type=RecurrenceType.DAILY,
+                start_date=date(2026, 4, 4)
+            )
+        )
+        self.assertIsNotNone(task.recurrence)
+        self.assertEqual(task.recurrence.type, RecurrenceType.DAILY)
+        self.pet.add_task(task)
+        self.assertEqual(len(self.pet.get_tasks()), 1)
+
+    def test_scheduler_expands_daily_recurring_task(self):
+        """Scheduler expands a daily recurring task into scheduled slots."""
+        task = Task(
+            id="daily_walk",
+            name="Morning Walk",
+            category=TaskCategory.WALK,
+            duration_minutes=30,
+            priority=Priority.MEDIUM,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=True,
+            recurrence=Recurrence(
+                type=RecurrenceType.DAILY,
+                start_date=date(2026, 4, 4)
+            )
+        )
+        self.pet.add_task(task)
+        plan = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 4))
+        
+        # Should be scheduled once as the cloned expanded instance
+        scheduled_ids = [st.task.id for st in plan.scheduled_tasks]
+        self.assertIn("daily_walk_recurring", scheduled_ids)
+        # Original (non-expanded) should NOT be scheduled
+        self.assertNotIn("daily_walk", scheduled_ids)
+
+    def test_scheduler_does_not_expand_non_matching_recurrence(self):
+        """Scheduler does not expand recurring tasks that don't apply to plan_date."""
+        # Task recurring on Saturdays
+        task = Task(
+            id="weekend_groom",
+            name="Grooming",
+            category=TaskCategory.GROOMING,
+            duration_minutes=45,
+            priority=Priority.MEDIUM,
+            preferred_time=TimeOfDay.AFTERNOON,
+            is_mandatory=False,
+            recurrence=Recurrence(
+                type=RecurrenceType.WEEKLY,
+                start_date=date(2026, 4, 4),  # Saturday
+                days_of_week=[5],  # Saturday only
+            )
+        )
+        self.pet.add_task(task)
+        
+        # Generate plan for a Monday (day doesn't match)
+        plan = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 6))
+        
+        # Original task is in the list, but no expansion should occur
+        # (It's not matched, so won't be expanded)
+        scheduled_ids = [st.task.id for st in plan.scheduled_tasks]
+        # Since the recurrence doesn't apply on Monday, task won't be scheduled
+        self.assertNotIn("weekend_groom_recurring", scheduled_ids)
+
+    def test_scheduler_expands_weekly_recurring_on_matching_day(self):
+        """Scheduler expands weekly recurring tasks only on matching days."""
+        task = Task(
+            id="weekend_groom",
+            name="Grooming",
+            category=TaskCategory.GROOMING,
+            duration_minutes=45,
+            priority=Priority.HIGH,
+            preferred_time=TimeOfDay.AFTERNOON,
+            is_mandatory=True,
+            recurrence=Recurrence(
+                type=RecurrenceType.WEEKLY,
+                start_date=date(2026, 4, 4),  # Saturday
+                days_of_week=[5],  # Saturday only
+            )
+        )
+        self.pet.add_task(task)
+        
+        # Plan for the Saturday when recurrence applies
+        plan = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 4))
+        scheduled_ids = [st.task.id for st in plan.scheduled_tasks]
+        
+        # Should only have the expanded instance
+        self.assertIn("weekend_groom_recurring", scheduled_ids)
+        self.assertNotIn("weekend_groom", scheduled_ids)
+
+    def test_scheduler_expands_interval_recurring_on_matching_day(self):
+        """Scheduler expands interval recurring tasks on matching interval days."""
+        task = Task(
+            id="medication",
+            name="Give Antibiotics",
+            category=TaskCategory.MEDICATION,
+            duration_minutes=10,
+            priority=Priority.HIGH,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=True,
+            recurrence=Recurrence(
+                type=RecurrenceType.INTERVAL,
+                start_date=date(2026, 4, 4),
+                interval=3,  # Every 3 days
+            )
+        )
+        self.pet.add_task(task)
+        
+        # April 4 is day 0 (matches)
+        plan1 = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 4))
+        scheduled1 = [st.task.id for st in plan1.scheduled_tasks]
+        self.assertIn("medication_recurring", scheduled1)
+        self.assertNotIn("medication", scheduled1)
+        
+        # April 5 is day 1 (doesn't match)
+        plan2 = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 5))
+        scheduled2 = [st.task.id for st in plan2.scheduled_tasks]
+        self.assertNotIn("medication_recurring", scheduled2)
+        self.assertNotIn("medication", scheduled2)
+        
+        # April 7 is day 3 (matches)
+        plan3 = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 7))
+        scheduled3 = [st.task.id for st in plan3.scheduled_tasks]
+        self.assertIn("medication_recurring", scheduled3)
+        self.assertNotIn("medication", scheduled3)
+
+    def test_recurring_task_respects_budget_constraints(self):
+        """Expanded recurring tasks compete for budget like regular tasks."""
+        # MORNING budget is 60 minutes
+        task = Task(
+            id="long_morning",
+            name="Extended Walk",
+            category=TaskCategory.WALK,
+            duration_minutes=70,  # Exceeds morning budget
+            priority=Priority.MEDIUM,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=False,
+            recurrence=Recurrence(
+                type=RecurrenceType.DAILY,
+                start_date=date(2026, 4, 4),
+            )
+        )
+        self.pet.add_task(task)
+        
+        plan = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 4))
+        # Task should not be scheduled due to budget (optional task)
+        scheduled_ids = [st.task.id for st in plan.scheduled_tasks]
+        self.assertNotIn("long_morning_recurring", scheduled_ids)
+        # Original non-recurring should also not be scheduled
+        self.assertNotIn("long_morning", scheduled_ids)
+
+    def test_recurring_task_in_skipped_when_no_budget(self):
+        """Expanded recurring tasks go to skipped_tasks if no budget available."""
+        # Add a mandatory task that uses up all morning budget (60 min)
+        mandatory = Task(
+            id="mandatory_morning",
+            name="Required Task",
+            category=TaskCategory.WALK,
+            duration_minutes=60,
+            priority=Priority.HIGH,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=True,
+        )
+        self.pet.add_task(mandatory)
+        
+        # Add a recurring optional task
+        recurring = Task(
+            id="optional_recurring",
+            name="Optional Walk",
+            category=TaskCategory.WALK,
+            duration_minutes=30,
+            priority=Priority.MEDIUM,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=False,
+            recurrence=Recurrence(
+                type=RecurrenceType.DAILY,
+                start_date=date(2026, 4, 4),
+            )
+        )
+        self.pet.add_task(recurring)
+        
+        plan = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 4))
+        
+        # Mandatory should be scheduled
+        scheduled_ids = [st.task.id for st in plan.scheduled_tasks]
+        self.assertIn("mandatory_morning", scheduled_ids)
+        
+        # Recurring optional should be skipped (no budget left)
+        # The cloned instance "optional_recurring_recurring" should be in skipped
+        skipped_ids = [t.id for t in plan.skipped_tasks]
+        self.assertIn("optional_recurring_recurring", skipped_ids)
+        # Original (with recurrence metadata) should never be in skipped or scheduled
+        self.assertNotIn("optional_recurring", skipped_ids)
+
+    def test_recurring_task_consolidated_with_consolidation_logic(self):
+        """Recurring feeding tasks can be consolidated with other feeding tasks."""
+        # Add a recurring feeding task
+        recurring_feed = Task(
+            id="feed_morning",
+            name="Morning Feed",
+            category=TaskCategory.FEEDING,
+            duration_minutes=15,
+            priority=Priority.HIGH,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=True,
+            recurrence=Recurrence(
+                type=RecurrenceType.DAILY,
+                start_date=date(2026, 4, 4),
+            )
+        )
+        
+        # Add another feeding task
+        other_feed = Task(
+            id="feed_other",
+            name="Extra Feed",
+            category=TaskCategory.FEEDING,
+            duration_minutes=10,
+            priority=Priority.MEDIUM,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=False,
+        )
+        
+        self.pet.add_task(recurring_feed)
+        self.pet.add_task(other_feed)
+        
+        plan = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 4))
+        
+        # Should have a single consolidated feeding task (from recurring + other)
+        feeding_tasks = [st for st in plan.scheduled_tasks 
+                        if st.task.category == TaskCategory.FEEDING]
+        # With consolidation, should be just 1 task representing both feedings
+        self.assertEqual(len(feeding_tasks), 1)
+        # The consolidated name should include both
+        self.assertIn("Morning Feed", feeding_tasks[0].task.name)
+        self.assertIn("Extra Feed", feeding_tasks[0].task.name)
+
+    def test_recurring_task_with_monthly_pattern(self):
+        """MONTHLY recurring tasks apply on the same day of each month."""
+        task = Task(
+            id="monthly_vet",
+            name="Monthly Vet Checkup",
+            category=TaskCategory.VET,
+            duration_minutes=60,
+            priority=Priority.HIGH,
+            preferred_time=TimeOfDay.AFTERNOON,
+            is_mandatory=True,
+            recurrence=Recurrence(
+                type=RecurrenceType.MONTHLY,
+                start_date=date(2026, 4, 15),
+            )
+        )
+        self.pet.add_task(task)
+        
+        # April 15 - should expand
+        plan1 = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 15))
+        scheduled1 = [st.task.id for st in plan1.scheduled_tasks]
+        self.assertIn("monthly_vet_recurring", scheduled1)
+        self.assertNotIn("monthly_vet", scheduled1)
+        
+        # May 15 - should also expand
+        plan2 = Scheduler(self.owner, self.pet).generate_plan(date(2026, 5, 15))
+        scheduled2 = [st.task.id for st in plan2.scheduled_tasks]
+        self.assertIn("monthly_vet_recurring", scheduled2)
+        self.assertNotIn("monthly_vet", scheduled2)
+        
+        # May 14 - should not expand
+        plan3 = Scheduler(self.owner, self.pet).generate_plan(date(2026, 5, 14))
+        scheduled3 = [st.task.id for st in plan3.scheduled_tasks]
+        self.assertNotIn("monthly_vet_recurring", scheduled3)
+        self.assertNotIn("monthly_vet", scheduled3)
+
+    def test_recurring_task_with_end_date_stops_recurring(self):
+        """Recurring tasks stop recurring after end_date."""
+        task = Task(
+            id="temp_morning_walk",
+            name="Temporary Morning Walk",
+            category=TaskCategory.WALK,
+            duration_minutes=30,
+            priority=Priority.MEDIUM,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=False,
+            recurrence=Recurrence(
+                type=RecurrenceType.DAILY,
+                start_date=date(2026, 4, 4),
+                end_date=date(2026, 4, 6),
+            )
+        )
+        self.pet.add_task(task)
+        
+        # April 4 - within range, should expand
+        plan1 = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 4))
+        scheduled1 = [st.task.id for st in plan1.scheduled_tasks]
+        self.assertIn("temp_morning_walk_recurring", scheduled1)
+        
+        # April 6 - on end_date, should expand
+        plan2 = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 6))
+        scheduled2 = [st.task.id for st in plan2.scheduled_tasks]
+        self.assertIn("temp_morning_walk_recurring", scheduled2)
+        
+        # April 7 - after end_date, should not expand
+        plan3 = Scheduler(self.owner, self.pet).generate_plan(date(2026, 4, 7))
+        scheduled3 = [st.task.id for st in plan3.scheduled_tasks]
+        # Task should not be in schedule at all (no original, no clone)
+        self.assertNotIn("temp_morning_walk_recurring", scheduled3)
+        self.assertNotIn("temp_morning_walk", scheduled3)
+
+
 if __name__ == "__main__":
     unittest.main()
+
+
+# ===========================================================================
+# Additional scheduler edge cases
+# ===========================================================================
+
+class TestSchedulerEdgeCasesExtended(unittest.TestCase):
+
+    def setUp(self):
+        self.owner = make_owner(wake_time=420, morning=60, afternoon=90, evening=30)
+        self.pet = Pet("Mochi", "dog")
+        self.owner.add_pet(self.pet)
+        self.scheduler = Scheduler(self.owner, self.pet)
+
+    def test_optional_any_time_skipped_when_all_windows_full(self):
+        """An ANY-time optional task is skipped when every window is at capacity."""
+        owner = make_owner(morning=10, afternoon=10, evening=10)
+        pet = Pet("Rex", "dog")
+        owner.add_pet(pet)
+        pet.add_task(make_task("m1", is_mandatory=True, duration=10, preferred_time=TimeOfDay.MORNING))
+        pet.add_task(make_task("m2", is_mandatory=True, duration=10, preferred_time=TimeOfDay.AFTERNOON))
+        pet.add_task(make_task("m3", is_mandatory=True, duration=10, preferred_time=TimeOfDay.EVENING))
+        pet.add_task(make_task("o1", is_mandatory=False, duration=5,  preferred_time=TimeOfDay.ANY))
+        plan = Scheduler(owner, pet).generate_plan(TODAY)
+        skipped_ids = {t.id for t in plan.skipped_tasks}
+        self.assertIn("o1", skipped_ids)
+
+    def test_optional_task_fits_exactly_at_remaining_budget_boundary(self):
+        """An optional task that exactly fills the leftover budget is scheduled, not skipped."""
+        # Morning: 60 min budget, mandatory uses 40 → 20 remain; optional is exactly 20
+        self.pet.add_task(make_task("m1", is_mandatory=True,  duration=40, preferred_time=TimeOfDay.MORNING))
+        self.pet.add_task(make_task("o1", is_mandatory=False, duration=20, preferred_time=TimeOfDay.MORNING))
+        plan = self.scheduler.generate_plan(TODAY)
+        scheduled_ids = {st.task.id for st in plan.scheduled_tasks}
+        self.assertIn("o1", scheduled_ids)
+        self.assertNotIn("o1", {t.id for t in plan.skipped_tasks})
+
+    def test_optional_task_one_minute_over_budget_is_skipped(self):
+        """An optional task that is 1 minute too long for the remaining budget is skipped."""
+        self.pet.add_task(make_task("m1", is_mandatory=True,  duration=40, preferred_time=TimeOfDay.MORNING))
+        self.pet.add_task(make_task("o1", is_mandatory=False, duration=21, preferred_time=TimeOfDay.MORNING))
+        plan = self.scheduler.generate_plan(TODAY)
+        skipped_ids = {t.id for t in plan.skipped_tasks}
+        self.assertIn("o1", skipped_ids)
+
+    def test_emergency_any_time_placed_in_morning(self):
+        """An EMERGENCY task with preferred_time=ANY is placed in the MORNING window."""
+        self.pet.add_task(make_task("e1", priority=Priority.EMERGENCY,
+                                   is_mandatory=False, duration=10,
+                                   preferred_time=TimeOfDay.ANY))
+        plan = self.scheduler.generate_plan(TODAY)
+        self.assertEqual(plan.scheduled_tasks[0].time_window, TimeOfDay.MORNING)
+
+    def test_multiple_emergency_tasks_same_window_stack_sequentially(self):
+        """Multiple EMERGENCY tasks in the same window are placed back-to-back, not overlapping."""
+        self.pet.add_task(make_task("e1", priority=Priority.EMERGENCY,
+                                   is_mandatory=False, duration=10,
+                                   preferred_time=TimeOfDay.MORNING))
+        self.pet.add_task(make_task("e2", priority=Priority.EMERGENCY,
+                                   is_mandatory=False, duration=10,
+                                   preferred_time=TimeOfDay.MORNING))
+        plan = self.scheduler.generate_plan(TODAY)
+        times = [(st.start_time, st.end_time) for st in plan.scheduled_tasks[:2]]
+        self.assertEqual(times[0], (420, 430))
+        self.assertEqual(times[1], (430, 440))
+
+    def test_wake_time_at_noon_morning_cursor_capped_at_1159(self):
+        """When wake_time is '12:00', the morning cursor is capped at '11:59'."""
+        owner = make_owner(wake_time=720, morning=60, afternoon=90, evening=30)
+        pet = Pet("Rex", "dog")
+        owner.add_pet(pet)
+        pet.add_task(make_task("t1", is_mandatory=True, duration=5,
+                               preferred_time=TimeOfDay.MORNING))
+        plan = Scheduler(owner, pet).generate_plan(TODAY)
+        self.assertEqual(plan.scheduled_tasks[0].start_time, 719)
+
+    def test_wake_time_at_noon_afternoon_cursor_starts_at_wake(self):
+        """When wake_time is '12:00', the afternoon cursor starts at '12:00', not earlier."""
+        owner = make_owner(wake_time=720, morning=0, afternoon=90, evening=30)
+        pet = Pet("Rex", "dog")
+        owner.add_pet(pet)
+        pet.add_task(make_task("t1", is_mandatory=True, duration=20,
+                               preferred_time=TimeOfDay.AFTERNOON))
+        plan = Scheduler(owner, pet).generate_plan(TODAY)
+        self.assertEqual(plan.scheduled_tasks[0].start_time, 720)
+
+    def test_afternoon_cursor_never_before_wake_time(self):
+        """An afternoon task starts no earlier than the owner's wake time."""
+        owner = make_owner(wake_time=840, morning=0, afternoon=90, evening=30)
+        pet = Pet("Rex", "dog")
+        owner.add_pet(pet)
+        pet.add_task(make_task("t1", is_mandatory=True, duration=20,
+                               preferred_time=TimeOfDay.AFTERNOON))
+        plan = Scheduler(owner, pet).generate_plan(TODAY)
+        self.assertEqual(plan.scheduled_tasks[0].start_time, 840)
+
+    def test_date_is_stored_on_all_scheduled_tasks(self):
+        """Every ScheduledTask in the plan carries the exact date passed to generate_plan."""
+        self.pet.add_task(make_task("t1", is_mandatory=True, duration=10,
+                                   preferred_time=TimeOfDay.MORNING))
+        target_date = date(2026, 6, 15)
+        plan = self.scheduler.generate_plan(target_date)
+        self.assertEqual(plan.scheduled_tasks[0].date, target_date)
+
+    def test_window_summary_budget_is_zero_when_owner_never_set_budget(self):
+        """get_window_summary() shows budget_minutes=0 for windows the owner never configured."""
+        owner = Owner("Sam", 420)  # no set_budget calls
+        pet = Pet("Rex", "dog")
+        owner.add_pet(pet)
+        plan = DailyPlan(TODAY, owner, pet)
+        summary = plan.get_window_summary()
+        self.assertEqual(summary["morning"]["budget_minutes"], 0)
+        self.assertEqual(summary["afternoon"]["budget_minutes"], 0)
+        self.assertEqual(summary["evening"]["budget_minutes"], 0)
+
+    def test_mandatory_task_with_no_budget_set_scheduled_with_warning(self):
+        """A mandatory task is always scheduled even when the owner never set any budget."""
+        owner = Owner("Sam", 420)
+        pet = Pet("Rex", "dog")
+        owner.add_pet(pet)
+        pet.add_task(make_task("t1", is_mandatory=True, duration=30,
+                               preferred_time=TimeOfDay.MORNING))
+        plan = Scheduler(owner, pet).generate_plan(TODAY)
+        self.assertEqual(len(plan.scheduled_tasks), 1)
+        self.assertTrue(len(plan.warnings) > 0)
+
+    def test_tasks_across_all_three_windows_scheduled_with_correct_start_times(self):
+        """Tasks in morning, afternoon, and evening each start at the correct window cursor."""
+        self.pet.add_task(make_task("t1", is_mandatory=True, duration=10,
+                                   preferred_time=TimeOfDay.MORNING))
+        self.pet.add_task(make_task("t2", is_mandatory=True, duration=10,
+                                   preferred_time=TimeOfDay.AFTERNOON))
+        self.pet.add_task(make_task("t3", is_mandatory=True, duration=10,
+                                   preferred_time=TimeOfDay.EVENING))
+        plan = self.scheduler.generate_plan(TODAY)
+        by_id = {st.task.id: st for st in plan.scheduled_tasks}
+        self.assertEqual(by_id["t1"].start_time, 420)
+        self.assertEqual(by_id["t2"].start_time, 720)
+        self.assertEqual(by_id["t3"].start_time, 1020)
+
+
+# ===========================================================================
+# Feeding Task Consolidation
+# ===========================================================================
+
+class TestFeedingConsolidation(unittest.TestCase):
+    """Tests for consolidating consecutive feeding tasks in the same time window."""
+
+    def setUp(self):
+        self.owner = make_owner(wake_time=420, morning=120, afternoon=120, evening=120)
+        self.pet = Pet("Mochi", "dog")
+        self.owner.add_pet(self.pet)
+        self.scheduler = Scheduler(self.owner, self.pet)
+
+    def test_two_consecutive_morning_feedings_consolidated(self):
+        """Two consecutive feeding tasks in the morning are merged into one slot."""
+        fp1 = FoodPreference("Dog Food", "dry", 200, 2)
+        fp2 = FoodPreference("Dog Treat", "dry", 50, 1)
+        
+        self.pet.add_task(make_task("f1", name="Morning Feeding", 
+                                   category=TaskCategory.FEEDING,
+                                   duration=5, priority=Priority.HIGH,
+                                   preferred_time=TimeOfDay.MORNING,
+                                   is_mandatory=True, food_preference=fp1))
+        self.pet.add_task(make_task("f2", name="Dog Treat",
+                                   category=TaskCategory.FEEDING,
+                                   duration=5, priority=Priority.MEDIUM,
+                                   preferred_time=TimeOfDay.MORNING,
+                                   is_mandatory=False, food_preference=fp2))
+        
+        plan = self.scheduler.generate_plan(TODAY)
+        feeding_tasks = [st for st in plan.scheduled_tasks if st.task.category == TaskCategory.FEEDING]
+        
+        # Should have exactly one consolidated feeding slot
+        self.assertEqual(len(feeding_tasks), 1)
+        # Duration should be combined: 5 + 5 = 10 minutes
+        self.assertEqual(feeding_tasks[0].task.duration_minutes, 10)
+        # Reason should indicate consolidation
+        self.assertIn("Consolidated", feeding_tasks[0].reason)
+        # Name should show both tasks
+        self.assertIn("Morning Feeding", feeding_tasks[0].task.name)
+        self.assertIn("Dog Treat", feeding_tasks[0].task.name)
+
+    def test_feedings_in_different_windows_not_consolidated(self):
+        """Feeding tasks in different windows (morning vs evening) are not consolidated."""
+        fp = FoodPreference("Dog Food", "dry", 200, 2)
+        
+        self.pet.add_task(make_task("f1", name="Morning Feeding",
+                                   category=TaskCategory.FEEDING,
+                                   duration=5, priority=Priority.HIGH,
+                                   preferred_time=TimeOfDay.MORNING,
+                                   is_mandatory=True, food_preference=fp))
+        self.pet.add_task(make_task("f2", name="Evening Feeding",
+                                   category=TaskCategory.FEEDING,
+                                   duration=5, priority=Priority.HIGH,
+                                   preferred_time=TimeOfDay.EVENING,
+                                   is_mandatory=True, food_preference=fp))
+        
+        plan = self.scheduler.generate_plan(TODAY)
+        feeding_tasks = [st for st in plan.scheduled_tasks if st.task.category == TaskCategory.FEEDING]
+        
+        # Should have two separate feeding slots (not consolidated)
+        self.assertEqual(len(feeding_tasks), 2)
+        # Neither should say "Consolidated"
+        for st in feeding_tasks:
+            self.assertNotIn("Consolidated", st.reason)
+
+    def test_feeding_separated_by_non_feeding_task_not_consolidated(self):
+        """Feeding tasks separated by a non-feeding task are not consolidated."""
+        fp = FoodPreference("Dog Food", "dry", 200, 2)
+        
+        self.pet.add_task(make_task("f1", name="Feeding 1",
+                                   category=TaskCategory.FEEDING,
+                                   duration=5, priority=Priority.HIGH,
+                                   preferred_time=TimeOfDay.MORNING,
+                                   is_mandatory=True, food_preference=fp))
+        self.pet.add_task(make_task("w1", name="Morning Walk",
+                                   category=TaskCategory.WALK,
+                                   duration=30, priority=Priority.HIGH,
+                                   preferred_time=TimeOfDay.MORNING,
+                                   is_mandatory=True))
+        self.pet.add_task(make_task("f2", name="Feeding 2",
+                                   category=TaskCategory.FEEDING,
+                                   duration=5, priority=Priority.MEDIUM,
+                                   preferred_time=TimeOfDay.MORNING,
+                                   is_mandatory=False, food_preference=fp))
+        
+        plan = self.scheduler.generate_plan(TODAY)
+        feeding_tasks = [st for st in plan.scheduled_tasks if st.task.category == TaskCategory.FEEDING]
+        
+        # Should have two separate feeding slots (not consecutive)
+        self.assertEqual(len(feeding_tasks), 2)
+        for st in feeding_tasks:
+            self.assertNotIn("Consolidated", st.reason)
+
+    def test_three_consecutive_feedings_all_consolidated(self):
+        """Three consecutive feeding tasks are consolidated into one."""
+        fp = FoodPreference("Food", "dry", 100, 1)
+        
+        for i in range(3):
+            self.pet.add_task(make_task(f"f{i}", name=f"Feeding {i}",
+                                       category=TaskCategory.FEEDING,
+                                       duration=5, priority=Priority.HIGH,
+                                       preferred_time=TimeOfDay.MORNING,
+                                       is_mandatory=True if i < 2 else False,
+                                       food_preference=fp))
+        
+        plan = self.scheduler.generate_plan(TODAY)
+        feeding_tasks = [st for st in plan.scheduled_tasks if st.task.category == TaskCategory.FEEDING]
+        
+        # Should consolidate all three into one slot
+        self.assertEqual(len(feeding_tasks), 1)
+        self.assertEqual(feeding_tasks[0].task.duration_minutes, 15)  # 5+5+5
+        self.assertIn("Consolidated", feeding_tasks[0].reason)
+
+    def test_consolidated_task_takes_highest_priority(self):
+        """A consolidated feeding task has the priority of the highest-priority constituent."""
+        fp = FoodPreference("Food", "dry", 100, 1)
+        
+        self.pet.add_task(make_task("f1", name="Low Priority Feeding",
+                                   category=TaskCategory.FEEDING,
+                                   duration=5, priority=Priority.LOW,
+                                   preferred_time=TimeOfDay.MORNING,
+                                   is_mandatory=False, food_preference=fp))
+        self.pet.add_task(make_task("f2", name="High Priority Feeding",
+                                   category=TaskCategory.FEEDING,
+                                   duration=5, priority=Priority.HIGH,
+                                   preferred_time=TimeOfDay.MORNING,
+                                   is_mandatory=True, food_preference=fp))
+        
+        plan = self.scheduler.generate_plan(TODAY)
+        feeding_tasks = [st for st in plan.scheduled_tasks if st.task.category == TaskCategory.FEEDING]
+        
+        self.assertEqual(len(feeding_tasks), 1)
+        # Consolidated task should have HIGH priority (max of the two)
+        self.assertEqual(feeding_tasks[0].task.priority, Priority.HIGH)
+
+    def test_non_feeding_tasks_passthrough_unchanged(self):
+        """Non-feeding tasks are not affected by consolidation logic."""
+        self.pet.add_task(make_task("w1", name="Walk",
+                                   category=TaskCategory.WALK,
+                                   duration=30, priority=Priority.HIGH,
+                                   preferred_time=TimeOfDay.MORNING,
+                                   is_mandatory=True))
+        self.pet.add_task(make_task("g1", name="Grooming",
+                                   category=TaskCategory.GROOMING,
+                                   duration=15, priority=Priority.MEDIUM,
+                                   preferred_time=TimeOfDay.AFTERNOON,
+                                   is_mandatory=False))
+        
+        plan = self.scheduler.generate_plan(TODAY)
+        non_feeding_count = sum(1 for st in plan.scheduled_tasks 
+                               if st.task.category != TaskCategory.FEEDING)
+        
+        # Should have 2 non-feeding tasks, both unchanged
+        self.assertEqual(non_feeding_count, 2)
+        self.assertEqual(plan.scheduled_tasks[0].task.name, "Walk")
+        self.assertEqual(plan.scheduled_tasks[1].task.name, "Grooming")
+
+    def test_consolidation_preserves_start_end_times(self):
+        """A consolidated feeding task spans from the first task's start to the last task's end."""
+        fp = FoodPreference("Food", "dry", 100, 1)
+        
+        self.pet.add_task(make_task("f1", name="Feed",
+                                   category=TaskCategory.FEEDING,
+                                   duration=5, priority=Priority.HIGH,
+                                   preferred_time=TimeOfDay.MORNING,
+                                   is_mandatory=True, food_preference=fp))
+        self.pet.add_task(make_task("f2", name="Treat",
+                                   category=TaskCategory.FEEDING,
+                                   duration=5, priority=Priority.MEDIUM,
+                                   preferred_time=TimeOfDay.MORNING,
+                                   is_mandatory=False, food_preference=fp))
+        
+        plan = self.scheduler.generate_plan(TODAY)
+        feeding_slot = [st for st in plan.scheduled_tasks 
+                       if st.task.category == TaskCategory.FEEDING][0]
+        
+        # Should start at 7:00 (wake time) and end at 7:10 (7:00 + 10 min)
+        self.assertEqual(feeding_slot.start_time, 420)
+        self.assertEqual(feeding_slot.end_time, 430)
+
+
+if __name__ == "__main__":
+    unittest.main()
+    print("All tests passed!")

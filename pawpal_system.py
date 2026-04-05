@@ -42,48 +42,147 @@ class TaskStatus(Enum):
     CARRIED_OVER = "carried_over"
 
 
+class RecurrenceType(Enum):
+    DAILY = "daily"
+    WEEKLY = "weekly"
+    INTERVAL = "interval"
+    MONTHLY = "monthly"
+
+
+class SkipReason(Enum):
+    BUDGET_EXCEEDED = "budget exceeded"
+    NO_COMPATIBLE_WINDOW = "no compatible window"
+    CARRIED_OVER_NO_FIT = "carried over — still no fit"
+
+
+class ConflictType(Enum):
+    OVER_CAPACITY = "over_capacity"
+    MANDATORY_OVER_BUDGET = "mandatory_over_budget"
+    CATEGORY_STACK = "category_stack"
+    TIME_OVERLAP = "time_overlap"
+
+
+@dataclass
+class Conflict:
+    conflict_type: ConflictType
+    message: str
+    task_id: Optional[str] = None
+
+
 # ---------------------------------------------------------------------------
 # Time helpers
 #
-# All times in this system are stored as plain "hr:min" strings (e.g. "7:30",
-# "14:05"). These helpers handle the arithmetic so nothing else needs to.
+# All times are stored internally as int (minutes since midnight, e.g. 450 for
+# 7:30, 845 for 14:05).  The parse/format helpers below are used only at
+# system boundaries (user input, display output, serialisation).
 # ---------------------------------------------------------------------------
 
-def _parse_time(time_str: str) -> tuple[int, int]:
-    """Split "hr:min" into (hours, minutes) as ints."""
+def parse_time_str(time_str: str) -> int:
+    """Convert an 'H:MM' or 'HH:MM' string to minutes since midnight."""
     h, m = time_str.split(":")
-    return int(h), int(m)
+    return int(h) * 60 + int(m)
 
 
-def _format_time(h: int, m: int) -> str:
-    """Reconstruct a "hr:min" string, zero-padding the minutes."""
+def format_time(minutes: int) -> str:
+    """Convert minutes since midnight to an 'H:MM' display string."""
+    h, m = divmod(minutes, 60)
     return f"{h}:{m:02d}"
 
 
-def _add_minutes(time_str: str, minutes: int) -> str:
-    """Return a new "hr:min" string that is `minutes` later than `time_str`."""
-    h, m = _parse_time(time_str)
-    total = h * 60 + m + minutes
-    return _format_time(total // 60, total % 60)
-
-
-def _time_to_window(time_str: str) -> TimeOfDay:
-    """Map a clock time to its day window.
-    before 12:00 → MORNING, 12–17 → AFTERNOON, 17+ → EVENING.
+def time_to_window(minutes: int) -> TimeOfDay:
+    """Map minutes-since-midnight to its day window.
+    <720 (12:00) → MORNING, 720–1019 → AFTERNOON, 1020+ (17:00) → EVENING.
     """
-    h, _ = _parse_time(time_str)
-    if h < 12:
+    if minutes < 720:
         return TimeOfDay.MORNING
-    elif h < 17:
+    elif minutes < 1020:
         return TimeOfDay.AFTERNOON
     return TimeOfDay.EVENING
 
 
-def _max_time(a: str, b: str) -> str:
-    """Return whichever "hr:min" string is later."""
-    ha, ma = _parse_time(a)
-    hb, mb = _parse_time(b)
-    return a if ha * 60 + ma >= hb * 60 + mb else b
+def recurrence_applies_to_date(recurrence: "Recurrence", check_date: date) -> bool:
+    """Check if a recurrence pattern applies to a given date.
+    
+    Args:
+        recurrence: The Recurrence object defining the pattern.
+        check_date: The date to check.
+    
+    Returns:
+        True if the recurrence applies on check_date, False otherwise.
+    """
+    if recurrence is None:
+        return False
+    
+    # Check if date is within start/end window
+    if check_date < recurrence.start_date:
+        return False
+    if recurrence.end_date and check_date > recurrence.end_date:
+        return False
+    
+    # Check based on recurrence type
+    if recurrence.type == RecurrenceType.DAILY:
+        return True
+    
+    elif recurrence.type == RecurrenceType.WEEKLY:
+        # Monday=0, Sunday=6
+        day_of_week = check_date.weekday()
+        return day_of_week in recurrence.days_of_week
+    
+    elif recurrence.type == RecurrenceType.INTERVAL:
+        # Check if (date - start_date) is a multiple of interval
+        days_passed = (check_date - recurrence.start_date).days
+        return days_passed % recurrence.interval == 0
+    
+    elif recurrence.type == RecurrenceType.MONTHLY:
+        # Recurs on the same day of month as start_date.
+        # For dates that don't exist (e.g., Feb 31), check if this date is the last day of check_date's month
+        # and start_date.day is >= 28 (potential edge case day).
+        target_day = recurrence.start_date.day
+        if check_date.day == target_day:
+            return True
+        
+        # Handle edge case: if target_day > 28 and check_date is the last day of its month,
+        # it might still count as a match (e.g., start_date=Jan 31, check_date=Feb 28)
+        from calendar import monthrange
+        _, days_in_month = monthrange(check_date.year, check_date.month)
+        if target_day > days_in_month and check_date.day == days_in_month:
+            return True
+        
+        return False
+    
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Recurrence
+# ---------------------------------------------------------------------------
+
+@dataclass
+class Recurrence:
+    """Defines a recurrence pattern for tasks.
+    
+    Attributes:
+        type: RecurrenceType (DAILY, WEEKLY, INTERVAL, or MONTHLY).
+        start_date: When the recurrence begins.
+        end_date: Optional; when the recurrence ends. If None, recurs indefinitely.
+        interval: For INTERVAL type only; every N days.
+        days_of_week: For WEEKLY type only; list of day numbers (0=Mon, 6=Sun).
+    """
+    type: RecurrenceType
+    start_date: date
+    end_date: Optional[date] = None
+    interval: int = 1
+    days_of_week: list[int] = field(default_factory=list)
+    
+    def validate(self):
+        """Raise ValueError if the recurrence data is logically invalid."""
+        if self.end_date and self.start_date > self.end_date:
+            raise ValueError("start_date must be <= end_date")
+        if self.type == RecurrenceType.INTERVAL and self.interval <= 0:
+            raise ValueError("interval must be positive for INTERVAL type")
+        if self.type == RecurrenceType.WEEKLY:
+            if not self.days_of_week or not all(0 <= d <= 6 for d in self.days_of_week):
+                raise ValueError("days_of_week must contain values 0-6 for WEEKLY type")
 
 
 # ---------------------------------------------------------------------------
@@ -137,6 +236,8 @@ class Task:
     is_mandatory: bool = False
     notes: Optional[str] = None
     food_preference: Optional[FoodPreference] = None  # populated for FEEDING tasks only
+    recurrence: Optional[Recurrence] = None  # populated for recurring tasks
+    specific_time: Optional[int] = None  # minutes since midnight; overrides window-based placement
 
     def validate(self):
         """Raise ValueError if the task data is logically invalid."""
@@ -144,6 +245,9 @@ class Task:
             raise ValueError(f"Task '{self.name}': duration_minutes must be positive")
         if not self.name.strip():
             raise ValueError("Task name cannot be empty")
+        if self.specific_time is not None:
+            if not (0 <= self.specific_time <= 1439):
+                raise ValueError(f"Task '{self.name}': specific_time must be 0–1439 (minutes since midnight)")
 
     def fits_in_budget(self, available_minutes: int) -> bool:
         """True if this task's duration fits inside the given minute budget."""
@@ -164,6 +268,7 @@ class Task:
             "duration_minutes": self.duration_minutes,
             "priority": self.priority.name,
             "preferred_time": self.preferred_time.value,
+            "specific_time": format_time(self.specific_time) if self.specific_time is not None else None,
             "is_mandatory": self.is_mandatory,
             "notes": self.notes,
         }
@@ -249,8 +354,8 @@ class Pet:
 # ---------------------------------------------------------------------------
 
 class Owner:
-    def __init__(self, name: str, wake_time: str):
-        # wake_time entered as "hr:min" e.g. "7:30"
+    def __init__(self, name: str, wake_time: int):
+        # wake_time as minutes since midnight, e.g. 450 for 7:30
         self.name = name
         self.wake_time = wake_time
         self.time_budget: dict[TimeOfDay, int] = {}
@@ -315,29 +420,25 @@ class ScheduledTask:
         self,
         task: Task,
         date: date,
-        start_time: str,
-        end_time: str,
+        start_time: int,
+        end_time: int,
         status: TaskStatus,
         reason: str,
         time_window: TimeOfDay,
     ):
-        # start_time and end_time stored as "hr:min" strings
+        # start_time and end_time are minutes since midnight
         self.task = task
         self.date = date
         self.start_time = start_time
         self.end_time = end_time
         self.status = status
         self.reason = reason
-        # time_window is stored explicitly so budget calculations never need
-        # to re-parse the time strings to figure out which window we're in
         self.time_window = time_window
 
     @property
     def duration_minutes(self) -> int:
-        """Compute duration from the stored start/end strings."""
-        h1, m1 = _parse_time(self.start_time)
-        h2, m2 = _parse_time(self.end_time)
-        return (h2 * 60 + m2) - (h1 * 60 + m1)
+        """Compute duration from the stored start/end ints."""
+        return self.end_time - self.start_time
 
     def mark_completed(self):
         self.status = TaskStatus.COMPLETED
@@ -347,7 +448,7 @@ class ScheduledTask:
 
     def __str__(self) -> str:
         return (
-            f"[{self.start_time}-{self.end_time}] {self.task.name} "
+            f"[{format_time(self.start_time)}-{format_time(self.end_time)}] {self.task.name} "
             f"({self.task.duration_minutes} min) - {self.status.value}"
         )
 
@@ -364,6 +465,8 @@ class DailyPlan:
         self.scheduled_tasks: list[ScheduledTask] = []
         self.skipped_tasks: list[Task] = []
         self.warnings: list[str] = []
+        self.skip_reasons: dict[str, SkipReason] = {}
+        self.conflicts: list[Conflict] = []
 
     def add_scheduled_task(self, st: ScheduledTask):
         self.scheduled_tasks.append(st)
@@ -373,6 +476,12 @@ class DailyPlan:
 
     def add_warning(self, msg: str):
         self.warnings.append(msg)
+
+    def add_conflict(self, conflict: Conflict):
+        self.conflicts.append(conflict)
+
+    def add_skip_reason(self, task_id: str, reason: SkipReason):
+        self.skip_reasons[task_id] = reason
 
     def get_window_summary(self) -> dict:
         """Return per-window usage stats: tasks scheduled, minutes used, budget available."""
@@ -388,6 +497,85 @@ class DailyPlan:
             }
         return summary
 
+    def get_tasks_sorted_by_time(self, window: Optional[TimeOfDay] = None) -> list[ScheduledTask]:
+        """Return scheduled tasks sorted chronologically by start time.
+        
+        Args:
+            window: If provided, only return tasks from that time window (MORNING, AFTERNOON, EVENING).
+                   If None, return all scheduled tasks sorted by time.
+        
+        Returns:
+            List of ScheduledTask objects sorted by start_time.
+        """
+        if window:
+            tasks = [st for st in self.scheduled_tasks if st.time_window == window]
+        else:
+            tasks = list(self.scheduled_tasks)
+        
+        return sorted(tasks, key=lambda st: st.start_time)
+
+    def get_tasks_by_status(self, status: TaskStatus) -> list[ScheduledTask]:
+        """Return all scheduled tasks with a specific status (SCHEDULED, COMPLETED, SKIPPED, CARRIED_OVER).
+        
+        Args:
+            status: The TaskStatus to filter by.
+        
+        Returns:
+            List of ScheduledTask objects matching the status.
+        """
+        return [st for st in self.scheduled_tasks if st.status == status]
+
+    def get_window_summary_extended(self, window: Optional[TimeOfDay] = None) -> dict:
+        """Return detailed window summary including sorted task information.
+        
+        Args:
+            window: If provided, return details for only that window.
+                   If None, return details for all three windows.
+        
+        Returns:
+            Dictionary with per-window stats including sorted task lists.
+            Format: {
+                "morning": {
+                    "budget_minutes": 60,
+                    "used_minutes": 45,
+                    "remaining_minutes": 15,
+                    "task_count": 2,
+                    "tasks": [{"name": "...", "start_time": "7:00", "end_time": "7:30", "status": "scheduled"}, ...]
+                },
+                ...
+            }
+        """
+        windows = [window] if window else [TimeOfDay.MORNING, TimeOfDay.AFTERNOON, TimeOfDay.EVENING]
+        summary = {}
+        
+        for w in windows:
+            sorted_tasks = self.get_tasks_sorted_by_time(w)
+            used = sum(st.task.duration_minutes for st in sorted_tasks)
+            budget = self.owner.get_budget(w)
+            remaining = max(0, budget - used)
+            
+            task_details = [
+                {
+                    "name": st.task.name,
+                    "start_time": format_time(st.start_time),
+                    "end_time": format_time(st.end_time),
+                    "status": st.status.value,
+                    "category": st.task.category.value,
+                    "priority": st.task.priority.name,
+                }
+                for st in sorted_tasks
+            ]
+            
+            summary[w.value] = {
+                "budget_minutes": budget,
+                "used_minutes": used,
+                "remaining_minutes": remaining,
+                "task_count": len(sorted_tasks),
+                "tasks": task_details,
+            }
+        
+        return summary
+
     def get_reasoning(self) -> str:
         """Build a human-readable explanation of every scheduling decision."""
         lines = [
@@ -401,7 +589,14 @@ class DailyPlan:
             lines.append("")
             lines.append("Skipped (eligible for carry-over tomorrow):")
             for t in self.skipped_tasks:
-                lines.append(f"  - {t.name} [{t.priority.name}]")
+                reason = self.skip_reasons.get(t.id)
+                reason_str = f" — {reason.value}" if reason else ""
+                lines.append(f"  - {t.name} [{t.priority.name}]{reason_str}")
+        if self.conflicts:
+            lines.append("")
+            lines.append("Conflicts:")
+            for c in self.conflicts:
+                lines.append(f"  [{c.conflict_type.value}] {c.message}")
         if self.warnings:
             lines.append("")
             lines.append("Warnings:")
@@ -433,24 +628,51 @@ class Scheduler:
         """
         plan = DailyPlan(plan_date, self.owner, self.pet)
         self._plan_date = plan_date
-        self._warnings: list[str] = []  # collected during passes, flushed into plan at the end
+        self._warnings: list[str] = []       # collected during passes, flushed into plan at the end
+        self._conflicts: list[Conflict] = []
+        self._skip_reasons: dict[str, SkipReason] = {}
 
         wake = self.owner.wake_time
         # Each window has an independent time cursor that advances as tasks are placed.
-        # If the owner wakes after noon, the MORNING cursor is pushed to 11:59 so it
-        # holds no usable time; AFTERNOON and EVENING start no earlier than wake_time.
+        # If the owner wakes after noon, the MORNING cursor is pushed to 719 (11:59) so
+        # it holds no usable time; AFTERNOON and EVENING start no earlier than wake_time.
         self._cursors = {
-            TimeOfDay.MORNING: wake if _parse_time(wake)[0] < 12 else "11:59",
-            TimeOfDay.AFTERNOON: _max_time(wake, "12:00"),
-            TimeOfDay.EVENING: _max_time(wake, "17:00"),
+            TimeOfDay.MORNING: wake if wake < 720 else 719,
+            TimeOfDay.AFTERNOON: max(wake, 720),
+            TimeOfDay.EVENING: max(wake, 1020),
         }
 
         # Merge pet's standing tasks with any tasks carried over from yesterday.
         # Carried-over tasks are only added if their id is not already in pet.tasks,
         # which prevents the same task from being double-counted.
         carried = self._carry_over(previous_plan) if previous_plan else []
+        self._carried_ids = {t.id for t in carried}
         existing_ids = {t.id for t in self.pet.tasks}
         all_tasks = list(self.pet.tasks) + [t for t in carried if t.id not in existing_ids]
+        
+        # Expand recurring tasks that apply to this date
+        all_tasks = self._expand_recurring_tasks(all_tasks, plan_date)
+
+        # Over-capacity check: warn if all tasks can't possibly fit in the day's budget
+        total_duration = sum(t.duration_minutes for t in all_tasks)
+        total_budget = self.owner.get_total_budget()
+        if total_duration > total_budget:
+            self._conflicts.append(Conflict(
+                ConflictType.OVER_CAPACITY,
+                f"Total task time ({total_duration} min) exceeds daily budget ({total_budget} min) — some tasks will be skipped",
+            ))
+
+        # Separate pinned tasks (specific_time set) from window-based tasks
+        pinned    = [t for t in all_tasks if t.specific_time]
+        all_tasks = [t for t in all_tasks if not t.specific_time]
+
+        # --- Pass 0: Pinned tasks — placed at their exact time, bypass budget ---
+        for task in pinned:
+            window = time_to_window(task.specific_time)
+            st = self._assign_slot(task, task.specific_time)
+            # Advance cursor only forward so later tasks don't overlap
+            self._cursors[window] = max(st.end_time, self._cursors[window])
+            plan.add_scheduled_task(st)
 
         # Split into the three scheduling pools
         emergency = [t for t in all_tasks if t.priority == Priority.EMERGENCY]
@@ -462,7 +684,7 @@ class Scheduler:
             plan.add_scheduled_task(st)
 
         # --- Pass 2: Mandatory ---
-        for st in self._schedule_mandatory(mandatory):
+        for st in self._schedule_mandatory(mandatory, plan):
             plan.add_scheduled_task(st)
 
         # Recompute remaining budget after the first two passes before running optional
@@ -480,10 +702,23 @@ class Scheduler:
         for task in all_tasks:
             if task.id not in scheduled_ids:
                 plan.add_skipped_task(task)
+                # Attribute a skip reason if not already set by the optional pass
+                if task.id not in self._skip_reasons:
+                    if task.id in self._carried_ids:
+                        self._skip_reasons[task.id] = SkipReason.CARRIED_OVER_NO_FIT
 
-        # Move accumulated warnings into the plan object
+        # Move accumulated warnings, conflicts, and skip reasons into the plan object
         for warning in self._warnings:
             plan.add_warning(warning)
+        for conflict in self._conflicts:
+            plan.add_conflict(conflict)
+        for task_id, reason in self._skip_reasons.items():
+            plan.add_skip_reason(task_id, reason)
+
+        # Consolidate consecutive feeding tasks in the same window
+        self._consolidate_feeding_tasks(plan)
+        self._detect_category_stacks(plan)
+        self._detect_time_overlaps(plan)
 
         return plan
 
@@ -501,21 +736,29 @@ class Scheduler:
             result.append(st)
         return result
 
-    def _schedule_mandatory(self, tasks: list[Task]) -> list[ScheduledTask]:
+    def _schedule_mandatory(self, tasks: list[Task], plan: DailyPlan) -> list[ScheduledTask]:
         """Place mandatory tasks, always scheduling them even if the budget is exceeded.
         A warning is added for any task that pushes a window over its budget.
         Window selection for ANY-time tasks picks whichever window has the most spare capacity.
         """
         result = []
         for task in self._sort_by_priority(tasks):
-            window = self._pick_window_from_budget(task, result)
+            window = self._pick_window_from_budget(task, plan, result)
             budget = self.owner.get_budget(window)
-            used = sum(st.task.duration_minutes for st in result if st.time_window == window)
+            # Account for tasks from ALL prior passes (pinned, emergency) plus this pass
+            used = (
+                sum(st.task.duration_minutes for st in plan.scheduled_tasks if st.time_window == window)
+                + sum(st.task.duration_minutes for st in result if st.time_window == window)
+            )
             if task.duration_minutes > budget - used:
-                self._warnings.append(
+                msg = (
                     f"Mandatory task '{task.name}' exceeds {window.value} budget by "
                     f"{task.duration_minutes - (budget - used)} min"
                 )
+                self._warnings.append(msg)
+                self._conflicts.append(Conflict(
+                    ConflictType.MANDATORY_OVER_BUDGET, msg, task_id=task.id
+                ))
             st = self._assign_slot(task, self._cursors[window])
             self._cursors[window] = st.end_time
             result.append(st)
@@ -532,12 +775,14 @@ class Scheduler:
                 window = task.preferred_time
                 # Skip this task if it doesn't fit in the budget that's left
                 if not task.fits_in_budget(remaining.get(window, 0)):
+                    self._skip_reasons[task.id] = SkipReason.BUDGET_EXCEEDED
                     continue
             else:
                 # Find all windows where the task fits, then pick the roomiest one
                 windows = [TimeOfDay.MORNING, TimeOfDay.AFTERNOON, TimeOfDay.EVENING]
                 viable = [w for w in windows if task.fits_in_budget(remaining.get(w, 0))]
                 if not viable:
+                    self._skip_reasons[task.id] = SkipReason.NO_COMPATIBLE_WINDOW
                     continue
                 window = max(viable, key=lambda w: remaining.get(w, 0))
 
@@ -551,14 +796,14 @@ class Scheduler:
         """Sort tasks descending by Priority value (EMERGENCY=4 first, LOW=1 last)."""
         return sorted(tasks, key=lambda t: t.priority.value, reverse=True)
 
-    def _assign_slot(self, task: Task, current_time: str) -> ScheduledTask:
+    def _assign_slot(self, task: Task, current_time: int) -> ScheduledTask:
         """Create a ScheduledTask starting at `current_time` and lasting task.duration_minutes.
         The reason string explains when the task was placed and includes feeding details
         when the task is a FEEDING task with a linked FoodPreference.
         """
-        end_time = _add_minutes(current_time, task.duration_minutes)
-        window = _time_to_window(current_time)
-        reason = f"Scheduled at {current_time} ({window.value})"
+        end_time = current_time + task.duration_minutes
+        window = time_to_window(current_time)
+        reason = f"Scheduled at {format_time(current_time)} ({window.value})"
         if task.food_preference:
             fp = task.food_preference
             reason += f" | {fp.food_name} - {fp.portion_size_grams}g"
@@ -583,19 +828,161 @@ class Scheduler:
         return max(0, budget - used)  # never return a negative number
 
     def _carry_over(self, previous_plan: DailyPlan) -> list[Task]:
-        """Pull skipped tasks from yesterday's plan so they can be rescheduled today."""
-        return list(previous_plan.skipped_tasks)
+        """Pull only MANDATORY and EMERGENCY skipped tasks from yesterday's plan.
+        Optional tasks are not carried over automatically; the owner must re-add them if desired.
+        """
+        return [
+            t for t in previous_plan.skipped_tasks
+            if t.is_mandatory or t.priority == Priority.EMERGENCY
+        ]
 
-    def _pick_window_from_budget(self, task: Task, scheduled: list[ScheduledTask]) -> TimeOfDay:
+    def _expand_recurring_tasks(self, tasks: list[Task], plan_date: date) -> list[Task]:
+        """Expand tasks with recurrence patterns into individual task instances for the given date.
+        
+        Non-recurring tasks pass through unchanged.
+        Recurring tasks are replaced with cloned instances (without recurrence) only when they apply to this date.
+        This ensures recurring tasks don't appear in the schedule on dates where they don't recur.
+        """
+        expanded = []
+        for task in tasks:
+            if task.recurrence:
+                # Only add cloned instance if the recurrence applies to this date
+                if recurrence_applies_to_date(task.recurrence, plan_date):
+                    cloned_task = Task(
+                        id=task.id + "_recurring",
+                        name=task.name,
+                        category=task.category,
+                        duration_minutes=task.duration_minutes,
+                        priority=task.priority,
+                        preferred_time=task.preferred_time,
+                        is_mandatory=task.is_mandatory,
+                        notes=task.notes,
+                        food_preference=task.food_preference,
+                        recurrence=None,  # Clear recurrence so it doesn't expand again
+                        specific_time=task.specific_time,
+                    )
+                    expanded.append(cloned_task)
+                # If recurrence doesn't apply to this date, task is not included at all
+            else:
+                # Non-recurring tasks pass through unchanged
+                expanded.append(task)
+        
+        return expanded
+
+    def _consolidate_feeding_tasks(self, plan: DailyPlan):
+        """Consolidate time-contiguous feeding tasks in the same time window into one slot.
+        This reduces clutter and represents batched feeding operations (e.g., feeding all pets at once).
+
+        Tasks are sorted by start time first so feedings from different scheduling
+        passes (pinned, emergency, mandatory, optional) are properly adjacent.
+        Only feedings whose times are truly contiguous (end == next start) are merged.
+        """
+        # Sort by start time so feedings from different passes are properly adjacent
+        plan.scheduled_tasks.sort(key=lambda st: st.start_time)
+
+        consolidated = []
+        i = 0
+
+        while i < len(plan.scheduled_tasks):
+            st = plan.scheduled_tasks[i]
+
+            # Non-feeding tasks pass through unchanged
+            if st.task.category != TaskCategory.FEEDING:
+                consolidated.append(st)
+                i += 1
+                continue
+
+            # Collect time-contiguous feeding tasks in the same window
+            feeding_group = [st]
+            j = i + 1
+            while j < len(plan.scheduled_tasks):
+                st_next = plan.scheduled_tasks[j]
+                if (st_next.task.category == TaskCategory.FEEDING
+                        and st_next.time_window == st.time_window
+                        and feeding_group[-1].end_time == st_next.start_time):
+                    feeding_group.append(st_next)
+                    j += 1
+                else:
+                    break
+
+            if len(feeding_group) > 1:
+                # Create a consolidated feeding task
+                end_time = feeding_group[-1].end_time
+                task_names = " + ".join(t.task.name for t in feeding_group)
+                total_minutes = sum(t.task.duration_minutes for t in feeding_group)
+
+                # Use highest priority among the group
+                max_priority = max(feeding_group, key=lambda x: x.task.priority.value).task.priority
+
+                # Preserve all original task IDs in a compound ID
+                compound_id = "+".join(t.task.id for t in feeding_group)
+
+                consolidated_task = Task(
+                    id=compound_id,
+                    name=task_names,
+                    category=TaskCategory.FEEDING,
+                    duration_minutes=total_minutes,
+                    priority=max_priority,
+                    preferred_time=st.task.preferred_time,
+                )
+
+                consolidated_st = ScheduledTask(
+                    task=consolidated_task,
+                    date=st.date,
+                    start_time=st.start_time,
+                    end_time=end_time,
+                    status=st.status,
+                    reason=f"Consolidated feeding: {task_names}",
+                    time_window=st.time_window,
+                )
+
+                consolidated.append(consolidated_st)
+                i = j
+            else:
+                # Only one feeding task in this sequence
+                consolidated.append(st)
+                i += 1
+
+        plan.scheduled_tasks = consolidated
+
+    def _pick_window_from_budget(self, task: Task, plan: DailyPlan, scheduled: list[ScheduledTask]) -> TimeOfDay:
         """Choose the best window for a task.
         If the task has a specific preferred_time, that window is used directly.
         If preferred_time is ANY, pick the window with the most remaining capacity
-        among the tasks already placed in this pass.
+        accounting for all prior passes and the current pass.
         """
         if task.preferred_time != TimeOfDay.ANY:
             return task.preferred_time
         windows = [TimeOfDay.MORNING, TimeOfDay.AFTERNOON, TimeOfDay.EVENING]
         def remaining(w: TimeOfDay) -> int:
-            used = sum(st.task.duration_minutes for st in scheduled if st.time_window == w)
+            used = (
+                sum(st.task.duration_minutes for st in plan.scheduled_tasks if st.time_window == w)
+                + sum(st.task.duration_minutes for st in scheduled if st.time_window == w)
+            )
             return self.owner.get_budget(w) - used
         return max(windows, key=remaining)
+
+    def _detect_category_stacks(self, plan: DailyPlan):
+        """Emit a conflict when 2+ tasks of the same category land in the same window."""
+        from collections import Counter
+        for window in [TimeOfDay.MORNING, TimeOfDay.AFTERNOON, TimeOfDay.EVENING]:
+            tasks_in_window = [st for st in plan.scheduled_tasks if st.time_window == window]
+            category_counts = Counter(st.task.category for st in tasks_in_window)
+            for category, count in category_counts.items():
+                if count > 1:
+                    plan.add_conflict(Conflict(
+                        ConflictType.CATEGORY_STACK,
+                        f"{count} {category.value} tasks in {window.value} — consider spreading them",
+                    ))
+
+    def _detect_time_overlaps(self, plan: DailyPlan):
+        """Emit a conflict for every pair of scheduled tasks whose time ranges overlap."""
+        tasks = plan.scheduled_tasks
+        for i, a in enumerate(tasks):
+            for b in tasks[i + 1:]:
+                if a.start_time < b.end_time and b.start_time < a.end_time:
+                    plan.add_conflict(Conflict(
+                        ConflictType.TIME_OVERLAP,
+                        f"'{a.task.name}' ({format_time(a.start_time)}–{format_time(a.end_time)}) overlaps "
+                        f"'{b.task.name}' ({format_time(b.start_time)}–{format_time(b.end_time)})",
+                    ))
