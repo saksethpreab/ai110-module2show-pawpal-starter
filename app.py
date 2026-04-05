@@ -323,6 +323,7 @@ else:
         st.table(
             [
                 {
+                    "#": i + 1,
                     "Name": t.name,
                     "Category": t.category.value,
                     "Duration (min)": t.duration_minutes,
@@ -331,18 +332,20 @@ else:
                     "Window": t.preferred_time.value,
                     "Mandatory": t.is_mandatory,
                 }
-                for t in tasks
+                for i, t in enumerate(tasks)
             ]
         )
 
-        remove_name = st.text_input("Remove task by name (exact)", key="remove_input")
+        remove_index = st.number_input(
+            "Remove task by index (1-based)",
+            min_value=1, max_value=len(tasks), value=1, step=1,
+            key="remove_index",
+        )
         if st.button("Remove task"):
-            match = next((t for t in selected_pet.get_tasks() if t.name == remove_name), None)
-            if match:
-                selected_pet.remove_task(match.id)   # Pet.remove_task filters by id
-                st.success(f"Removed '{remove_name}'")
-            else:
-                st.warning(f"No task named '{remove_name}' found.")
+            target = tasks[int(remove_index) - 1]
+            selected_pet.remove_task(target.id)
+            st.success(f"Removed '{target.name}'")
+            st.rerun()
     else:
         st.info("No tasks yet. Add one above.")
 

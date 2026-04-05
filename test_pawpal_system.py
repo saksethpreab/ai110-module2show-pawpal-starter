@@ -11,7 +11,7 @@ from pawpal_system import (
     # Time helpers
     parse_time_str, format_time, time_to_window, recurrence_applies_to_date,
     # Enums
-    TaskCategory, Priority, TimeOfDay, TaskStatus, RecurrenceType,
+    TaskCategory, Priority, TimeOfDay, TaskStatus, RecurrenceType, ConflictType,
     # Classes
     FoodPreference, Task, Pet, Owner, ScheduledTask, DailyPlan, Scheduler, Recurrence,
 )
@@ -2591,6 +2591,299 @@ class TestFeedingConsolidation(unittest.TestCase):
         # Should start at 7:00 (wake time) and end at 7:10 (7:00 + 10 min)
         self.assertEqual(feeding_slot.start_time, 420)
         self.assertEqual(feeding_slot.end_time, 430)
+
+
+# ===========================================================================
+# Recurrence Continuity
+# ===========================================================================
+
+class TestRecurrenceContinuity(unittest.TestCase):
+    """Verify that recurring tasks appear on matching days regardless of prior completion."""
+
+    def setUp(self):
+        self.owner = make_owner(wake_time=420, morning=120, afternoon=120, evening=60)
+        self.pet = Pet("Rex", "dog", "Lab", 2.0)
+        self.owner.add_pet(self.pet)
+        self.day1 = date(2025, 6, 1)   # Sunday  (weekday=6)
+        self.day2 = date(2025, 6, 2)   # Monday  (weekday=0)
+
+    def _daily_task(self, tid="r1"):
+        return Task(
+            id=tid, name="Daily Walk",
+            category=TaskCategory.WALK,
+            duration_minutes=20,
+            priority=Priority.MEDIUM,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=False,
+            recurrence=Recurrence(
+                type=RecurrenceType.DAILY,
+                start_date=date(2025, 1, 1),
+            ),
+        )
+
+    def test_daily_task_appears_on_consecutive_days(self):
+        """A DAILY recurring task is scheduled on both day1 and day2."""
+        self.pet.add_task(self._daily_task())
+        plan1 = Scheduler(self.owner, self.pet).generate_plan(self.day1)
+        plan2 = Scheduler(self.owner, self.pet).generate_plan(self.day2)
+        ids1 = {st.task.id for st in plan1.scheduled_tasks}
+        ids2 = {st.task.id for st in plan2.scheduled_tasks}
+        self.assertTrue(any("r1" in i for i in ids1), "task missing from day1")
+        self.assertTrue(any("r1" in i for i in ids2), "task missing from day2")
+
+    def test_completing_day1_does_not_suppress_day2(self):
+        """Marking day1's instance complete does not remove it from day2's plan."""
+        self.pet.add_task(self._daily_task())
+        plan1 = Scheduler(self.owner, self.pet).generate_plan(self.day1)
+        # Mark every scheduled task on day1 complete
+        for st in plan1.scheduled_tasks:
+            st.mark_completed()
+        plan2 = Scheduler(self.owner, self.pet).generate_plan(self.day2)
+        ids2 = {st.task.id for st in plan2.scheduled_tasks}
+        self.assertTrue(any("r1" in i for i in ids2),
+                        "recurring task should still appear on day2 after day1 completion")
+
+    def test_weekly_task_absent_on_non_matching_day(self):
+        """WEEKLY task set for Monday only does not appear on Sunday."""
+        task = Task(
+            id="w1", name="Weekly Groom",
+            category=TaskCategory.GROOMING,
+            duration_minutes=15,
+            priority=Priority.LOW,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=False,
+            recurrence=Recurrence(
+                type=RecurrenceType.WEEKLY,
+                start_date=date(2025, 1, 1),
+                days_of_week=[0],   # Monday only
+            ),
+        )
+        self.pet.add_task(task)
+        plan_sunday = Scheduler(self.owner, self.pet).generate_plan(self.day1)  # Sunday
+        ids = {st.task.id for st in plan_sunday.scheduled_tasks}
+        self.assertFalse(any("w1" in i for i in ids),
+                         "Monday-only task should not appear on Sunday")
+
+    def test_weekly_task_present_on_matching_day(self):
+        """WEEKLY task set for Monday appears on Monday."""
+        task = Task(
+            id="w1", name="Weekly Groom",
+            category=TaskCategory.GROOMING,
+            duration_minutes=15,
+            priority=Priority.LOW,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=False,
+            recurrence=Recurrence(
+                type=RecurrenceType.WEEKLY,
+                start_date=date(2025, 1, 1),
+                days_of_week=[0],   # Monday only
+            ),
+        )
+        self.pet.add_task(task)
+        plan_monday = Scheduler(self.owner, self.pet).generate_plan(self.day2)  # Monday
+        ids = {st.task.id for st in plan_monday.scheduled_tasks}
+        self.assertTrue(any("w1" in i for i in ids),
+                        "Monday-only task should appear on Monday")
+
+    def test_recurring_task_stops_after_end_date(self):
+        """DAILY task with end_date=day1 does not appear on day2."""
+        task = Task(
+            id="r2", name="Expiring Task",
+            category=TaskCategory.WALK,
+            duration_minutes=10,
+            priority=Priority.MEDIUM,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=False,
+            recurrence=Recurrence(
+                type=RecurrenceType.DAILY,
+                start_date=date(2025, 1, 1),
+                end_date=self.day1,   # expires after day1
+            ),
+        )
+        self.pet.add_task(task)
+        plan1 = Scheduler(self.owner, self.pet).generate_plan(self.day1)
+        plan2 = Scheduler(self.owner, self.pet).generate_plan(self.day2)
+        ids1 = {st.task.id for st in plan1.scheduled_tasks}
+        ids2 = {st.task.id for st in plan2.scheduled_tasks}
+        self.assertTrue(any("r2" in i for i in ids1), "task should appear on day1 (within range)")
+        self.assertFalse(any("r2" in i for i in ids2), "task should not appear on day2 (past end_date)")
+
+    def test_expanded_recurring_task_id_has_suffix(self):
+        """Expanded recurring task clone gets '_recurring' appended to its id."""
+        self.pet.add_task(self._daily_task("orig"))
+        plan = Scheduler(self.owner, self.pet).generate_plan(self.day1)
+        ids = [st.task.id for st in plan.scheduled_tasks]
+        self.assertIn("orig_recurring", ids)
+
+
+# ===========================================================================
+# Time-Overlap Conflict Detection
+# ===========================================================================
+
+class TestTimeOverlapConflictDetection(unittest.TestCase):
+    """Tests for _detect_time_overlaps — verifies plan.conflicts receives TIME_OVERLAP entries."""
+
+    def setUp(self):
+        self.owner = make_owner(wake_time=420, morning=240, afternoon=120, evening=60)
+        self.pet = Pet("Dot", "cat", "Tabby", 3.0)
+        self.owner.add_pet(self.pet)
+        self.plan_date = date(2025, 6, 1)
+
+    def _pinned(self, tid, name, start_min, duration=30):
+        return Task(
+            id=tid, name=name,
+            category=TaskCategory.WALK,
+            duration_minutes=duration,
+            priority=Priority.MEDIUM,
+            preferred_time=TimeOfDay.MORNING,
+            is_mandatory=False,
+            specific_time=start_min,
+        )
+
+    def _run(self, tasks):
+        for t in tasks:
+            self.pet.add_task(t)
+        return Scheduler(self.owner, self.pet).generate_plan(self.plan_date)
+
+    def _overlap_conflicts(self, plan):
+        return [c for c in plan.conflicts if c.conflict_type == ConflictType.TIME_OVERLAP]
+
+    def test_two_pinned_same_start_produces_conflict(self):
+        """Two pinned tasks starting at the same time produce one TIME_OVERLAP conflict."""
+        plan = self._run([
+            self._pinned("a", "Task A", 480),  # 8:00–8:30
+            self._pinned("b", "Task B", 480),  # 8:00–8:30
+        ])
+        self.assertEqual(len(self._overlap_conflicts(plan)), 1)
+
+    def test_two_pinned_partial_overlap_produces_conflict(self):
+        """Two pinned tasks with partial overlap (A starts before B ends) produce a conflict."""
+        plan = self._run([
+            self._pinned("a", "Task A", 480, 30),  # 8:00–8:30
+            self._pinned("b", "Task B", 500, 30),  # 8:20–8:50
+        ])
+        self.assertEqual(len(self._overlap_conflicts(plan)), 1)
+
+    def test_two_pinned_adjacent_no_conflict(self):
+        """Two pinned tasks that are exactly adjacent (A ends when B starts) produce no conflict."""
+        plan = self._run([
+            self._pinned("a", "Task A", 480, 30),  # 8:00–8:30
+            self._pinned("b", "Task B", 510, 30),  # 8:30–9:00
+        ])
+        self.assertEqual(len(self._overlap_conflicts(plan)), 0)
+
+    def test_two_pinned_no_overlap_no_conflict(self):
+        """Two pinned tasks with a gap between them produce no conflict."""
+        plan = self._run([
+            self._pinned("a", "Task A", 480, 30),  # 8:00–8:30
+            self._pinned("b", "Task B", 540, 30),  # 9:00–9:30
+        ])
+        self.assertEqual(len(self._overlap_conflicts(plan)), 0)
+
+    def test_three_pinned_all_overlapping_produces_three_conflicts(self):
+        """Three mutually overlapping pinned tasks produce three pairwise conflicts."""
+        plan = self._run([
+            self._pinned("a", "Task A", 480, 60),  # 8:00–9:00
+            self._pinned("b", "Task B", 490, 60),  # 8:10–9:10
+            self._pinned("c", "Task C", 500, 60),  # 8:20–9:20
+        ])
+        self.assertEqual(len(self._overlap_conflicts(plan)), 3)
+
+    def test_conflict_message_contains_task_names_and_times(self):
+        """TIME_OVERLAP conflict message includes both task names and formatted times."""
+        plan = self._run([
+            self._pinned("a", "Alpha Walk", 480, 30),
+            self._pinned("b", "Beta Walk",  480, 30),
+        ])
+        conflicts = self._overlap_conflicts(plan)
+        self.assertEqual(len(conflicts), 1)
+        msg = conflicts[0].message
+        self.assertIn("Alpha Walk", msg)
+        self.assertIn("Beta Walk", msg)
+        self.assertIn("8:00", msg)
+
+    def test_pinned_task_ending_exactly_when_next_starts_no_conflict(self):
+        """Boundary: end_time == next start_time is NOT an overlap (open interval)."""
+        plan = self._run([
+            self._pinned("a", "Task A", 600, 60),  # 10:00–11:00
+            self._pinned("b", "Task B", 660, 30),  # 11:00–11:30
+        ])
+        self.assertEqual(len(self._overlap_conflicts(plan)), 0)
+
+
+# ===========================================================================
+# Remove Task by Index
+# ===========================================================================
+
+class TestRemoveTaskByIndex(unittest.TestCase):
+    """Tests for the index-based removal pattern used in the UI:
+       target = pet.get_tasks()[index - 1]; pet.remove_task(target.id)
+    """
+
+    def setUp(self):
+        self.pet = Pet("Buddy", "dog")
+        self.t1 = make_task("t1", name="Walk")
+        self.t2 = make_task("t2", name="Feed")
+        self.t3 = make_task("t3", name="Groom")
+        for t in [self.t1, self.t2, self.t3]:
+            self.pet.add_task(t)
+
+    def _remove_by_index(self, index: int):
+        """Simulate the UI: 1-based index → remove by id."""
+        target = self.pet.get_tasks()[index - 1]
+        self.pet.remove_task(target.id)
+
+    def test_get_tasks_returns_insertion_order(self):
+        """get_tasks() returns tasks in the order they were added."""
+        names = [t.name for t in self.pet.get_tasks()]
+        self.assertEqual(names, ["Walk", "Feed", "Groom"])
+
+    def test_remove_first_by_index(self):
+        """Removing index 1 deletes the first task."""
+        self._remove_by_index(1)
+        names = [t.name for t in self.pet.get_tasks()]
+        self.assertEqual(names, ["Feed", "Groom"])
+
+    def test_remove_middle_by_index(self):
+        """Removing index 2 deletes the middle task."""
+        self._remove_by_index(2)
+        names = [t.name for t in self.pet.get_tasks()]
+        self.assertEqual(names, ["Walk", "Groom"])
+
+    def test_remove_last_by_index(self):
+        """Removing index 3 (last) deletes the last task."""
+        self._remove_by_index(3)
+        names = [t.name for t in self.pet.get_tasks()]
+        self.assertEqual(names, ["Walk", "Feed"])
+
+    def test_remaining_tasks_preserve_relative_order(self):
+        """After removal, the remaining tasks keep their original relative order."""
+        self._remove_by_index(1)
+        tasks = self.pet.get_tasks()
+        self.assertEqual(tasks[0].id, "t2")
+        self.assertEqual(tasks[1].id, "t3")
+
+    def test_repeated_removal_updates_list_length(self):
+        """Each removal decreases the task count by exactly one."""
+        self.assertEqual(len(self.pet.get_tasks()), 3)
+        self._remove_by_index(1)
+        self.assertEqual(len(self.pet.get_tasks()), 2)
+        self._remove_by_index(1)
+        self.assertEqual(len(self.pet.get_tasks()), 1)
+        self._remove_by_index(1)
+        self.assertEqual(len(self.pet.get_tasks()), 0)
+
+    def test_remove_all_one_by_one_leaves_empty_list(self):
+        """Removing every task by index leaves an empty task list."""
+        for _ in range(3):
+            self._remove_by_index(1)
+        self.assertEqual(self.pet.get_tasks(), [])
+
+    def test_index_accesses_correct_task_after_prior_removal(self):
+        """After removing index 1, index 1 now refers to what was previously index 2."""
+        self._remove_by_index(1)   # removes "Walk"
+        target = self.pet.get_tasks()[0]   # index 1 in new list
+        self.assertEqual(target.name, "Feed")
 
 
 if __name__ == "__main__":
