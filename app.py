@@ -421,26 +421,15 @@ else:
                 for s in p.scheduled_tasks
                 if st.session_state.get(f"task_status_{pid}_{s.task.id}", "to-do") == "skip"
             )
-            done_pct  = int(completed_tasks / total_tasks * 100) if total_tasks else 0
-            skip_pct  = int(skipped_tasks  / total_tasks * 100) if total_tasks else 0
+            done_pct  = completed_tasks / total_tasks if total_tasks else 0
             todo_tasks = total_tasks - completed_tasks - skipped_tasks
-            st.markdown(
-                f"<div style='margin-bottom:12px'>"
-                f"<div style='display:flex;justify-content:space-between;font-size:13px;margin-bottom:4px'>"
-                f"<span>Daily progress</span>"
-                f"<span style='font-weight:600'>"
-                f"<span style='color:#4a9eff'>{completed_tasks} done</span>"
-                f"{'&nbsp;·&nbsp;<span style=\"color:#ffc107\">' + str(skipped_tasks) + ' skipped</span>' if skipped_tasks else ''}"
-                f"{'&nbsp;·&nbsp;' + str(todo_tasks) + ' to-do' if todo_tasks else ''}"
-                f"</span>"
-                f"</div>"
-                f"<div style='display:flex;background:#e9ecef;border-radius:6px;height:10px;overflow:hidden'>"
-                f"<div style='background:#4a9eff;width:{done_pct}%;height:10px'></div>"
-                f"<div style='background:#ffc107;width:{skip_pct}%;height:10px'></div>"
-                f"</div>"
-                f"</div>",
-                unsafe_allow_html=True,
-            )
+            parts = [f"{completed_tasks} done"]
+            if skipped_tasks:
+                parts.append(f"{skipped_tasks} skipped")
+            if todo_tasks:
+                parts.append(f"{todo_tasks} to-do")
+            st.caption(f"Daily progress — {' · '.join(parts)}")
+            st.progress(done_pct)
 
             # --- Filter controls ---
             col_sort, col_filter_status, col_filter_pet = st.columns([2, 2, 3])
@@ -606,8 +595,8 @@ else:
                 st.markdown("**Skipped (will carry over tomorrow)**")
                 for t in plan.skipped_tasks:
                     reason = plan.skip_reasons.get(t.id)
-                    reason_label = f" — *{reason.value}*" if reason else ""
-                    st.write(f"- **{t.name}** [{t.priority.name}]{reason_label}")
+                    reason_label = f" — {reason.value}" if reason else ""
+                    st.warning(f"**{t.name}** [{t.priority.name}]{reason_label}")
 
             st.markdown("**Window summary**")
             summary = plan.get_window_summary()
@@ -616,25 +605,20 @@ else:
                 s = summary[window_key]
                 used = s["used_minutes"]
                 budget = s["budget_minutes"]
-                over = used > budget and budget > 0
-                fill_pct = min(int(used / budget * 100), 100) if budget > 0 else 0
-                bar_color = "#dc3545" if over else "#28a745"
-                col.markdown(f"**{window_key.capitalize()}**")
-                col.markdown(
-                    f"<div style='background:#e9ecef;border-radius:4px;height:8px;margin:4px 0'>"
-                    f"<div style='background:{bar_color};width:{fill_pct}%;height:8px;border-radius:4px'></div>"
-                    f"</div>"
-                    f"<span style='font-size:12px;color:#555'>{used} / {budget} min &nbsp;·&nbsp; {s['tasks']} task(s)"
-                    f"{'&nbsp; <span style=\"color:#dc3545\">over by ' + str(used - budget) + ' min</span>' if over else ''}"
-                    f"</span>",
-                    unsafe_allow_html=True,
+                delta = used - budget
+                delta_str = (f"+{delta} min over" if delta > 0 else f"{abs(delta)} min left") if budget > 0 else "no budget set"
+                col.metric(
+                    label=f"{window_key.capitalize()} ({s['tasks']} task(s))",
+                    value=f"{used} / {budget} min",
+                    delta=delta_str,
+                    delta_color="inverse" if delta > 0 else "normal",
                 )
 
             if plan.conflicts:
                 with st.expander(f"Conflicts ({len(plan.conflicts)})"):
                     for c in plan.conflicts:
                         label = CONFLICT_LABELS.get(c.conflict_type, "[CONFLICT]")
-                        st.markdown(f"`{label}` {c.message}")
+                        st.error(f"{label} {c.message}")
 
             with st.expander("Full plan reasoning"):
                 st.text(str(plan))

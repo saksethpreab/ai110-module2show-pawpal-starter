@@ -42,6 +42,23 @@ pip install -r requirements.txt #
 6. Connect your logic to the Streamlit UI in `app.py`.
 7. Refine UML so it matches what you actually built.
 
+# Feature List
+
+| Feature | What it does | Problem it solves |
+|---|---|---|
+| **4-pass priority scheduler** | Places pinned tasks first, then emergency, mandatory, and optional tasks in priority order | Ensures critical tasks (medication, feeding) are never displaced by lower-priority ones |
+| **Per-window time budgets** | Morning, afternoon, and evening each have independent minute caps | Prevents over-scheduling a single part of the day while other windows sit empty |
+| **Mandatory task enforcement** | Mandatory tasks are always scheduled even if they exceed the window budget; a warning is shown | Pet health tasks cannot be safely skipped — the owner is informed rather than the task silently dropped |
+| **Pinned start times** | Tasks can be locked to an exact clock time, bypassing window-based placement | Lets owners schedule time-sensitive tasks (e.g. vet appointments) at a precise hour |
+| **Recurring tasks** | Daily, weekly, interval, and monthly recurrence patterns; tasks only appear on matching dates | Eliminates manually re-adding routine tasks every day |
+| **Carry-over** | Mandatory and emergency tasks that don't fit today are automatically promoted to tomorrow | Prevents critical tasks from being lost when a day is over-capacity |
+| **Conflict detection** | Flags over-capacity days, budget overruns, same-category stacking, and pinned-task time overlaps | Surfaces scheduling problems before the owner discovers a missed task |
+| **Feeding consolidation** | Consecutive same-window feeding tasks are merged into one time block | Reduces clutter in the schedule when multiple pets share a feeding window |
+| **Task viewing with filters** | Scheduled tasks can be filtered by pet and status, and sorted by time or priority | Makes it easy to find what still needs to be done in a busy daily plan |
+| **Completion tracking** | Each task has a to-do / done / skip status; a progress bar shows daily completion percentage | Gives the owner a clear view of how much of the day's care has been completed |
+| **Index-based task removal** | Tasks are listed with a numeric index; entering the index removes the correct task immediately | Avoids typo errors from name-based deletion and reflects in the UI instantly |
+| **Multi-pet support** | Multiple pets can be added and managed independently under one owner | Handles households with more than one animal without duplicate data entry |
+
 # Smarter Scheduling
 
 - **4-pass priority scheduler** — pinned tasks placed at exact times first, then emergency, mandatory, and optional tasks fill remaining windows in priority order

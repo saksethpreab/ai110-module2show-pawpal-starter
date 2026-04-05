@@ -127,7 +127,7 @@ The test suite covers priority ordering, budget enforcement, recurrence continui
 
 - What part of this project are you most satisfied with?
 
-The task viewing UI. Beyond just displaying a schedule, the app lets the user filter by status and pet, sort by time or priority, and track completion progress with a live progress bar. It turned what could have been a static list into something interactive — the owner can mark tasks done, see how much of the day is complete, and quickly find what's left. That layer of interactivity made the scheduler feel like a real tool rather than a one-shot output.
+The task viewing UI. Beyond just displaying a schedule, the app lets the user filter by status and pet, sort by time or priority, and track completion progress with a native progress bar. Tasks are listed with a numeric index for reliable removal, and the per-window summary uses `st.metric` to instantly show how much capacity remains or has been exceeded. These details — consistent use of native Streamlit components like `st.warning`, `st.error`, `st.metric`, and `st.progress` — turned what could have been a static list into something polished and interactive. The owner can mark tasks done, see how much of the day is complete, and quickly find what's left.
 
 **b. What you would improve**
 
